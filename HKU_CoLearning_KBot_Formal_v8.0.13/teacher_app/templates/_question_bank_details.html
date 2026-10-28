@@ -1,0 +1,19 @@
+{% macro body(q, details) %}
+<div>{{q.question}}</div>
+{% if q.question_type == 'MATCHING' %}
+<div class="pair-columns"><div><strong>Left items</strong>{% for pair in details.pairs %}<div>{{pair.left_id}} · {{pair.left_text}}</div>{% endfor %}</div><div><strong>Right items</strong>{% for pair in details.pairs %}<div>{{pair.right_id}} · {{pair.right_text}}</div>{% endfor %}</div></div>
+{% elif q.question_type in ('TF', 'MCQ') %}
+{% for key,value in q.options.items() %}<div>{{key}}. {{value}}</div>{% endfor %}
+{% endif %}
+{% endmacro %}
+
+{% macro answer(q, details) %}
+{% if q.question_type == 'MATCHING' %}
+<strong>Correct pairs</strong>{% for pair in details.pairs %}<div>{{pair.left_id}} ↔ {{pair.right_id}} · {{pair.left_text}} ↔ {{pair.right_text}}</div>{% endfor %}
+{% elif q.question_type == 'FILL' %}
+{% for blank in details.blanks %}<div><strong>{{blank.id}}</strong>: {{blank.accepted_answers|join(' / ')}}<br><small class="muted">{{'Ignore case' if blank.ignore_case else 'Case-sensitive'}} · trim surrounding spaces</small></div>{% endfor %}
+{% elif q.question_type == 'SHORT' %}
+<strong>Reference answer</strong><div>{{details.reference_answer}}</div><strong>Rubric · {{details.max_score}} points total</strong>{% for criterion in details.rubric %}<div>{{criterion.id}} · {{criterion.criterion}} ({{criterion.points}} points)</div>{% endfor %}
+{% else %}<strong>{{q.correct_answer}}</strong>{% endif %}
+{% if q.explanation %}<div class="muted">{{q.explanation}}</div>{% endif %}
+{% endmacro %}
