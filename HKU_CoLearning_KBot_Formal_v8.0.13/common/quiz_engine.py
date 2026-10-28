@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -399,6 +400,12 @@ def _true_false_focus(
     if not candidates:
         raise QuizUnavailableError("No complete course-note statement is available for a True/False question on this topic.")
     candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    # Empty topic = chapter-wide random: sample among the strongest unused facts.
+    if not str(topic or "").strip():
+        unused = [item for item in candidates if item[0] == 1]
+        pool = unused or candidates
+        top = pool[: min(8, len(pool))]
+        return random.choice(top)[4]
     return candidates[0][4]
 
 

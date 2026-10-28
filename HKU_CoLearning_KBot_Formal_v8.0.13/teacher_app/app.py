@@ -27,7 +27,9 @@ from common.config import apply_overrides, database_url, env, env_bool, env_floa
 from common.feedback_builder import build_record_review
 from common.knowledge_client import KnowledgeClient, KnowledgeServiceError
 from common.models import StudentQARecord, User, db
+from common.question_bank import upsert_items
 from common.schema_compat import ensure_legacy_schema
+from teacher_app.question_bank import bp as question_bank_bp
 from teacher_app.chroma_index import ChromaRecordIndex
 from teacher_app.kahoot_export import build_kahoot_xlsx
 from teacher_app.record_exports import build_records_xlsx
@@ -174,6 +176,7 @@ def create_app(overrides: dict | None = None) -> Flask:
     app.config["TEACHER_CHROMA_PATH"] = str(resolve_path(app.config["TEACHER_CHROMA_PATH"]))
     if app.config.get("TEACHER_SEMANTIC_MODEL_PATH"):
         app.config["TEACHER_SEMANTIC_MODEL_PATH"] = str(resolve_path(app.config["TEACHER_SEMANTIC_MODEL_PATH"]))
+    app.register_blueprint(question_bank_bp)
     db.init_app(app)
     record_index = ChromaRecordIndex(
         enabled=app.config["TEACHER_CHROMA_ENABLED"],
@@ -384,6 +387,43 @@ def create_app(overrides: dict | None = None) -> Flask:
             }), 201
         except KnowledgeServiceError as exc:
             return jsonify({"status": "error", "message": str(exc)}), 503
+
+    @app.post("/question_bank/items")
+    @login_required
+    def question_bank_upsert():
+        """Reserved JSON upsert for the teacher question bank.
+
+        Upload UI / CSV import is owned by teammates. Body:
+          {"items": [ {chapter_id, question_type, question, ...}, ... ]}
+        See ``common.question_bank`` module docstring for the full field schema.
+        """
+        data = request.get_json(silent=True) or {}
+        items = data.get("items")
+        if items is None and isinstance(data, list):
+            items = data
+        if not isinstance(items, list) or not items:
+            return jsonify({
+                "ok": False,
+                "status": "error",
+                "message": "Provide a non-empty JSON list under 'items'.",
+            }), 400
+        try:
+            written = upsert_items(items, uploaded_by=current_user.username)
+        except ValueError as exc:
+            return jsonify({"ok": False, "status": "error", "message": str(exc)}), 400
+        except SQLAlchemyError:
+            db.session.rollback()
+            return jsonify({
+                "ok": False,
+                "status": "error",
+                "message": "Could not save question bank items.",
+            }), 500
+        return jsonify({
+            "ok": True,
+            "status": "success",
+            "written": written,
+            "message": f"Upserted {written} question bank item(s).",
+        }), 200
 
     @app.get("/knowledge/list")
     @login_required

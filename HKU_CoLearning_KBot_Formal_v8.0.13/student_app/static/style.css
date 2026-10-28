@@ -474,6 +474,26 @@ a {
   border-left-color: var(--danger);
 }
 
+.quiz-source-label {
+  display: inline-block;
+  margin: 0 0 0.75rem;
+  padding: 0.28rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.quiz-source-bank {
+  background: #e8f5ee;
+  color: #1f6b45;
+}
+
+.quiz-source-ai {
+  background: #eef2ff;
+  color: #3b4bb8;
+}
+
 .quiz-area {
   margin: 1.2rem 0;
 }
