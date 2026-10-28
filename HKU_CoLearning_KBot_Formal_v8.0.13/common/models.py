@@ -126,4 +126,13 @@ class BankQuestion(db.Model):
     explanation = db.Column(db.Text, nullable=False, default="")
     source = db.Column(db.String(32), nullable=False, default="teacher_upload")
     created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+    details = db.relationship("BankQuestionDetails", uselist=False, back_populates="question", cascade="all, delete-orphan", lazy="selectin")
     __table_args__ = (db.UniqueConstraint("owner_id", "course", "question_id", name="uq_bank_owner_course_question"),)
+
+
+class BankQuestionDetails(db.Model):
+    """Structured private answer data; a new table avoids altering the existing bank."""
+    __tablename__ = "teacher_bank_question_details"
+    question_id = db.Column(db.String(32), db.ForeignKey("teacher_bank_questions.id"), primary_key=True)
+    data = db.Column(db.JSON, nullable=False)
+    question = db.relationship("BankQuestion", back_populates="details")
