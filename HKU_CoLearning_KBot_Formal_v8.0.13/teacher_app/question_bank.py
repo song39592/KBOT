@@ -8,8 +8,9 @@ from flask_login import current_user, login_required
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from openpyxl import Workbook
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from common.models import BankQuestion, db
+from common.models import BankQuestion, BankQuestionDetails, db
 from common.question_bank import HEADERS, MAX_FILE_BYTES, parse_workbook
+from common.question_bank_extended import QUESTION_HEADERS, DETAIL_HEADERS
 
 bp = Blueprint("question_bank", __name__, url_prefix="/question-bank")
 
@@ -49,7 +50,12 @@ def read_upload():
     if not uploaded or not uploaded.filename.lower().endswith(".xlsx"):
         raise ValueError("Select an .xlsx workbook.")
     content = uploaded.stream.read(MAX_FILE_BYTES + 1)
-    questions, errors = parse_workbook(content)
+    try:
+        questions, errors = parse_workbook(content)
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("Invalid workbook contents. Download a fresh template and paste values only.") from exc
     existing = {q.question_id.casefold() for q in BankQuestion.query.filter_by(owner_id=current_user.id, course=course).all()}
     for question in questions:
         if question["question_id"].casefold() in existing:
@@ -81,13 +87,43 @@ def template():
     sheet.append(["TF001", "TF", "HTTP", "HTTP is stateless.", "", "", "", "", "", "TRUE", "HTTP itself does not retain session state."])
     sheet.append(["MCQ001", "MCQ", "DNS", "Which protocol resolves domain names?", "HTTP", "DNS", "SMTP", "FTP", "", "B", "DNS resolves domain names."])
     sheet.freeze_panes = "A2"
+    kind = request.args.get("type", "OBJECTIVE").upper()
+    if kind not in ("OBJECTIVE", "MATCHING", "FILL", "SHORT"):
+        return jsonify(error="Template type must be OBJECTIVE, MATCHING, FILL or SHORT."), 400
+    if kind != "OBJECTIVE":
+        book.remove(sheet)
+        sheet = book.create_sheet("Questions")
+        sheet.append(QUESTION_HEADERS)
+        if kind == "MATCHING":
+            sheet.append(["MAT001", "MATCHING", "Protocols", "Match each protocol to its purpose.", "", "Each protocol has one purpose."])
+            detail = book.create_sheet("Matching")
+            detail.append(DETAIL_HEADERS["Matching"])
+            for values in [("L1", "HTTP", "R1", "Transfer web content"), ("L2", "DNS", "R2", "Resolve domain names"), ("L3", "SMTP", "R3", "Send email")]:
+                detail.append(["MAT001", *values])
+        elif kind == "FILL":
+            sheet.append(["FILL001", "FILL", "DNS", "DNS resolves domain names to {{blank1}} addresses using port {{blank2}}.", "", "DNS uses port 53."])
+            detail = book.create_sheet("Blanks")
+            detail.append(DETAIL_HEADERS["Blanks"])
+            detail.append(["FILL001", "blank1", "IP", "TRUE"])
+            detail.append(["FILL001", "blank1", "Internet Protocol", "TRUE"])
+            detail.append(["FILL001", "blank2", "53", "FALSE"])
+        else:
+            sheet.append(["SA001", "SHORT", "TCP and UDP", "Explain two differences between TCP and UDP.", "TCP is connection-oriented and provides reliable ordered delivery; UDP is connectionless and does not guarantee delivery or order.", "Award points according to the rubric."])
+            detail = book.create_sheet("Rubric")
+            detail.append(DETAIL_HEADERS["Rubric"])
+            detail.append(["SA001", "C1", "TCP is connection-oriented; UDP is connectionless.", 1])
+            detail.append(["SA001", "C2", "TCP provides reliable ordered delivery; UDP does not guarantee it.", 1])
+    for worksheet in book.worksheets:
+        worksheet.freeze_panes = "A2"
+        for column in worksheet.columns:
+            worksheet.column_dimensions[column[0].column_letter].width = 24
     for col in sheet.columns:
         sheet.column_dimensions[col[0].column_letter].width = 24
     output = io.BytesIO()
     book.save(output)
     book.close()
     output.seek(0)
-    return send_file(output, as_attachment=True, download_name="question_bank_template.xlsx")
+    return send_file(output, as_attachment=True, download_name=f"question_bank_{kind.lower()}_template.xlsx")
 
 
 @bp.post("/preview")
@@ -126,8 +162,11 @@ def confirm():
         return jsonify(error="The file or course changed. Validate and preview again."), 400
     try:
         for question in questions:
-            fields = {key: value for key, value in question.items() if key != "row"}
-            db.session.add(BankQuestion(owner_id=current_user.id, course=course, **fields))
+            fields = {key: value for key, value in question.items() if key not in ("row", "details")}
+            item = BankQuestion(owner_id=current_user.id, course=course, **fields)
+            if "details" in question:
+                item.details = BankQuestionDetails(data=question["details"])
+            db.session.add(item)
         db.session.commit()
     except IntegrityError:
         db.session.rollback()
