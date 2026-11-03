@@ -76,6 +76,39 @@ class StudentQARecord(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=utcnow, index=True)
 
 
+class TeacherQuestionBankItem(db.Model):
+    """Teacher-maintained question bank used before student AI generation.
+
+    Upload / CSV import UI is owned by teammates; student generate calls
+    ``common.question_bank.pick_question`` against this table.
+    """
+
+    __tablename__ = "teacher_question_bank"
+
+    id = db.Column(db.String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
+    chapter_id = db.Column(db.String(160), nullable=False, default="", index=True)
+    chapter = db.Column(db.String(256), nullable=False, default="")
+    question_type = db.Column(db.String(32), nullable=False, index=True)
+    topic = db.Column(db.String(256), nullable=False, default="")
+    question = db.Column(db.Text, nullable=False)
+    options_or_pairs = db.Column(db.Text, nullable=False, default="{}")
+    correct_answer = db.Column(db.Text, nullable=False, default="")
+    explanation = db.Column(db.Text, nullable=False, default="")
+    question_fingerprint = db.Column(db.String(80), nullable=False, default="", index=True)
+    citations_json = db.Column(db.Text, nullable=False, default="[]")
+    source_document = db.Column(db.String(255), nullable=False, default="")
+    source_page = db.Column(db.Integer)
+    source_excerpt = db.Column(db.Text, nullable=False, default="")
+    source_chunk_id = db.Column(db.String(160), nullable=False, default="")
+    knowledge_key = db.Column(db.String(160), nullable=False, default="")
+    fact_key = db.Column(db.String(80), nullable=False, default="")
+    fact_summary = db.Column(db.String(500), nullable=False, default="")
+    created_by = db.Column(db.String(128), nullable=False, default="")
+    is_active = db.Column(db.Boolean, nullable=False, default=True, index=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=utcnow, index=True)
+    updated_at = db.Column(db.DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
 class NotesQARecord(db.Model):
     __tablename__ = "notes_qa_records"
 

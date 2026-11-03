@@ -2,7 +2,7 @@
 
 Teachers can import True/False, single-answer MCQ, Matching, Fill Blank and Short Answer through the **Question bank** entry on the teacher dashboard. All types follow download template → upload → validate → preview → confirm → list. Course filtering and pagination remain available.
 
-This extension is based on PR #2 (`feature/teacher-question-bank`, 70ab59c). It adds the three structured types without changing the existing TF/MCQ workbook contract. Review/merge the a-stage PR before moving this extension onto main. Neither main nor the production VM is changed by this work.
+PR #2 (TF/MCQ upload) is now merged into main, along with PR #1 (student bank-first generation). This extension targets main and preserves both the student retrieval helpers and the structured upload parser. It adds the three structured types without changing the existing TF/MCQ workbook contract. Production VM deployment remains pending.
 
 ## Teacher workflow
 
@@ -89,7 +89,7 @@ Teacher/admin authentication, owner-scoped lists, session CSRF checks and escape
 
 `question_type` values are `TF`, `MCQ`, `MATCHING`, `FILL`, `SHORT`; source remains `teacher_upload`. The existing migration service and startup `db.create_all()` create the new table, preserving old rows. There are no new packages or configuration values.
 
-The bank remains separate from course knowledge and is never ingested into the document vector index or teacher student-answer index. Student bank-first retrieval and grading are unchanged, and there is no dependency on the teammate's proposed `/question_bank/items` API. Later student integration must map type names, authorize courses and keep all standard answers server-side until submission.
+The bank remains separate from course knowledge and is never ingested into the document vector index or teacher student-answer index. Student TF/MCQ bank-first retrieval and the existing `/question_bank/items` helper from main are retained unchanged. Matching/FILL/SHORT uploads do not yet participate in student retrieval or grading. Later student integration must map type names, authorize courses and keep all standard answers server-side until submission.
 
 ## Verification
 
@@ -111,3 +111,8 @@ Browser acceptance completed: all template links visible; a mixed workbook with 
 Before redeployment, shut down and **clone the Ubuntu VM**, verify the clone exists, and back up the database. A local Git clone is not a VM backup. Preserve real `.env` files and follow the team's pull/build/up procedure only after review and merge. Never run `docker compose down -v`.
 
 The existing migrate service creates both bank tables before Teacher startup. Rollback to earlier code can retain the additive tables and uploaded data. Earlier TF/MCQ-only UI will not display the new structured answer details; those data remain available when the extension is restored. Test Home, existing student login/exercises, teacher TF/MCQ upload and the three new upload flows after any deployment.
+
+
+## Pre-deployment integration check (2026-11-03)
+
+PR #3 was retargeted to main after #2 merged. Main also includes the teammate student retrieval changes from #1. Resolve shared question_bank.py by preserving every retrieval/upsert helper from main and adding only the structured workbook dispatch from this extension. Keep course matching guidance: TF/MCQ uploads must use the student chapter label or chapter ID as course. The student mapping currently supports Excel TF/MCQ only; do not advertise bank-first retrieval for the other three types. Group approval, an actual VM clone and database backup are still required before production deployment.

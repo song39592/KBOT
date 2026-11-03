@@ -290,16 +290,13 @@ function setupExercise(quizType, autoGenerate = false, fixedTopic = "") {
 
   async function generateQuestion() {
     if (working) return;
+    // Topic may be empty: backend prefers the teacher question bank, then AI.
     const topic = topicValue();
-    if (!topic) {
-      status.textContent = "Please enter one topic to begin the quiz flow.";
-      status.className = "error-msg";
-      topicInput?.focus();
-      return;
-    }
     working = true;
     generate.disabled = true;
-    status.textContent = "Generating from course notes…";
+    status.textContent = topic
+      ? "Checking the teacher question bank, then generating if needed…"
+      : "Checking the teacher question bank (no topic), else AI will generate…";
     status.className = "status-message";
     target.replaceChildren();
     citations.replaceChildren();
@@ -307,6 +304,12 @@ function setupExercise(quizType, autoGenerate = false, fixedTopic = "") {
       const data = await requestQuestion(topic);
       if (topicInput) topicInput.disabled = true;
       const quiz = data.quiz;
+      if (data.source_label) {
+        const badge = makeNode("p", data.source_label, "quiz-source-label");
+        if (data.generated_by_ai) badge.classList.add("quiz-source-ai");
+        else if (data.from_question_bank) badge.classList.add("quiz-source-bank");
+        target.append(badge);
+      }
       target.append(makeNode("h2", quiz.question, "quiz-stem"));
       const form = answerControl(quiz);
       target.append(form);

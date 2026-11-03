@@ -23,6 +23,21 @@ CREATE TABLE IF NOT EXISTS student_qa_records (
   INDEX idx_source_chunk(source_chunk_id), INDEX idx_knowledge_key(knowledge_key), INDEX idx_fact_key(fact_key), INDEX idx_created_at(created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS teacher_question_bank (
+  id VARCHAR(64) PRIMARY KEY, chapter_id VARCHAR(160) NOT NULL DEFAULT '', chapter VARCHAR(256) NOT NULL DEFAULT '',
+  question_type VARCHAR(32) NOT NULL, topic VARCHAR(256) NOT NULL DEFAULT '', question TEXT NOT NULL,
+  options_or_pairs TEXT NOT NULL, correct_answer TEXT NOT NULL, explanation TEXT NOT NULL,
+  question_fingerprint VARCHAR(80) NOT NULL DEFAULT '', citations_json TEXT NOT NULL,
+  source_document VARCHAR(255) NOT NULL DEFAULT '', source_page INT NULL, source_excerpt TEXT NOT NULL,
+  source_chunk_id VARCHAR(160) NOT NULL DEFAULT '', knowledge_key VARCHAR(160) NOT NULL DEFAULT '',
+  fact_key VARCHAR(80) NOT NULL DEFAULT '', fact_summary VARCHAR(500) NOT NULL DEFAULT '',
+  created_by VARCHAR(128) NOT NULL DEFAULT '', is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_tqb_chapter(chapter_id), INDEX idx_tqb_type(question_type),
+  INDEX idx_tqb_fp(question_fingerprint), INDEX idx_tqb_active(is_active), INDEX idx_tqb_created(created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS notes_qa_records (
   id VARCHAR(64) PRIMARY KEY, student_name VARCHAR(128) NOT NULL, chapter_id VARCHAR(160) NOT NULL DEFAULT '', chapter VARCHAR(256) NOT NULL DEFAULT '',
   question TEXT NOT NULL, answer TEXT NOT NULL, citations_json TEXT NOT NULL, insufficient_information TINYINT(1) NOT NULL DEFAULT 0,
