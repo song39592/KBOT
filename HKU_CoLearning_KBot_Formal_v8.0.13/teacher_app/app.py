@@ -150,6 +150,7 @@ def create_app(overrides: dict | None = None) -> Flask:
         "SESSION_COOKIE_SECURE": env_bool("SESSION_COOKIE_SECURE", env("KBOT_ENV", "development").casefold() == "production"),
         "SQLALCHEMY_DATABASE_URI": database_url(),
         "SQLALCHEMY_TRACK_MODIFICATIONS": False,
+        "KNOWLEDGE_READ_KEY": env("KNOWLEDGE_READ_KEY"),
         "KNOWLEDGE_SERVICE_URL": env("KNOWLEDGE_SERVICE_URL", "http://127.0.0.1:5100"),
         "KNOWLEDGE_ADMIN_KEY": env("KNOWLEDGE_ADMIN_KEY") or "local-admin-key-change-before-deployment",
         "KNOWLEDGE_TIMEOUT": env_float("KNOWLEDGE_TIMEOUT", 15, 2, 120),
@@ -219,6 +220,7 @@ def create_app(overrides: dict | None = None) -> Flask:
         if client is None:
             client = KnowledgeClient(
                 app.config["KNOWLEDGE_SERVICE_URL"],
+                read_key=app.config["KNOWLEDGE_READ_KEY"],
                 admin_key=app.config["KNOWLEDGE_ADMIN_KEY"],
                 timeout=app.config["KNOWLEDGE_TIMEOUT"],
             )

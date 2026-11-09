@@ -4,17 +4,19 @@ Teachers can import True/False, single-answer MCQ, Matching, Fill Blank and Shor
 
 PR #2 (TF/MCQ upload) is now merged into main, along with PR #1 (student bank-first generation). This extension targets main and preserves both the student retrieval helpers and the structured upload parser. It adds the three structured types without changing the existing TF/MCQ workbook contract. Production VM deployment remains pending.
 
+New imports use the **Course-note chapter** dropdown loaded from uploaded course notes; select the chapter instead of manually entering its title. The chosen chapter ID is stored in `course`. All five templates use this same selection. See [chapter selection and rollout](COURSE_BANK_SELECTION.md).
+
 ## Teacher workflow
 
 1. Sign in to Teacher and open **Question bank**.
 2. Download the appropriate template. The original **Download Excel template** is for TF/MCQ; three additional links provide Matching, Fill Blank and Short Answer templates.
 3. Replace the example question rows AND their linked detail rows. Keep sheet names and headers exactly as supplied. The same question ID links a Questions row to its details.
-4. Enter the course name/code, select the workbook, and **Validate & preview**.
+4. Select the course-note chapter and workbook, and **Validate & preview**.
 5. Fix every reported issue. Errors include worksheet name and Excel row number. No questions are saved during preview.
 6. Check all questions, options/items, standard answers and rubrics, then **Confirm import**.
 7. Verify the question and its structured answer appear in **Your imported questions**.
 
-Limits: .xlsx only; 5 MB compressed / 20 MB expanded; 1,000 Questions rows and 10,000 data rows per detail sheet. Formula cells are rejected. Course is a manually entered identifier, not a new course registry. Question IDs are unique within a teacher's course. In-file IDs are compared case-insensitively; database collation may impose stricter uniqueness. Existing questions are never overwritten; any failure rolls back the whole import.
+Limits: .xlsx only; 5 MB compressed / 20 MB expanded; 1,000 Questions rows and 10,000 data rows per detail sheet. Formula cells are rejected. Course is the chapter ID selected from uploaded course notes, not a manually typed name. Question IDs are unique within a teacher's course. In-file IDs are compared case-insensitively; database collation may impose stricter uniqueness. Existing questions are never overwritten; any failure rolls back the whole import.
 
 ## TF and MCQ: unchanged format
 
@@ -110,9 +112,9 @@ Browser acceptance completed: all template links visible; a mixed workbook with 
 
 Before redeployment, shut down and **clone the Ubuntu VM**, verify the clone exists, and back up the database. A local Git clone is not a VM backup. Preserve real `.env` files and follow the team's pull/build/up procedure only after review and merge. Never run `docker compose down -v`.
 
-The existing migrate service creates both bank tables before Teacher startup. Rollback to earlier code can retain the additive tables and uploaded data. Earlier TF/MCQ-only UI will not display the new structured answer details; those data remain available when the extension is restored. Test Home, existing student login/exercises, teacher TF/MCQ upload and the three new upload flows after any deployment.
+An updated migration service or updated Teacher startup creates both bank tables. When rebuilding only Teacher, its startup creates the additive detail table. Rollback to earlier code can retain the additive tables and uploaded data. Earlier TF/MCQ-only UI will not display the new structured answer details; those data remain available when the extension is restored. Test Home, existing student login/exercises, teacher TF/MCQ upload and the three new upload flows after any deployment.
 
 
 ## Pre-deployment integration check (2026-11-03)
 
-PR #3 was retargeted to main after #2 merged. Main also includes the teammate student retrieval changes from #1. Resolve shared question_bank.py by preserving every retrieval/upsert helper from main and adding only the structured workbook dispatch from this extension. Keep course matching guidance: TF/MCQ uploads must use the student chapter label or chapter ID as course. The student mapping currently supports Excel TF/MCQ only; do not advertise bank-first retrieval for the other three types. Group approval, an actual VM clone and database backup are still required before production deployment.
+PR #3 was retargeted to main after #2 merged. Main also includes the teammate student retrieval changes from #1. Resolve shared question_bank.py by preserving every retrieval/upsert helper from main and adding only the structured workbook dispatch from this extension. The teacher dropdown now supplies the chapter ID automatically for all five types. The student mapping currently supports Excel TF/MCQ only; do not advertise bank-first retrieval for the other three types. Group approval, an actual VM clone and database backup are still required before production deployment.
