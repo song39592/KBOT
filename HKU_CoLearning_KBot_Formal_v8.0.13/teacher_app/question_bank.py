@@ -8,6 +8,7 @@ from flask_login import current_user, login_required
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from openpyxl import Workbook
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from common.knowledge_client import KnowledgeClient, KnowledgeServiceError
 from common.models import BankQuestion, BankQuestionDetails, db
 from common.question_bank import HEADERS, MAX_FILE_BYTES, parse_workbook
 from common.question_bank_extended import QUESTION_HEADERS, DETAIL_HEADERS
@@ -42,11 +43,27 @@ def signer():
     return URLSafeTimedSerializer(current_app.secret_key, salt="teacher-bank-import-v1")
 
 
+def available_chapters():
+    client = current_app.extensions.get("knowledge_client")
+    if client is None:
+        client = KnowledgeClient(
+            current_app.config["KNOWLEDGE_SERVICE_URL"],
+            read_key=current_app.config["KNOWLEDGE_READ_KEY"],
+            admin_key=current_app.config["KNOWLEDGE_ADMIN_KEY"],
+            timeout=current_app.config["KNOWLEDGE_TIMEOUT"],
+        )
+        current_app.extensions["knowledge_client"] = client
+    return {str(c["id"]): c for c in client.chapters() if c.get("id")}
+
+
 def read_upload():
     course = request.form.get("course", "").strip()
     uploaded = request.files.get("file")
     if not course or len(course) > 160:
-        raise ValueError("Enter a course name/code of 1–160 characters.")
+        raise ValueError("Select an available course-note chapter.")
+    chapters = available_chapters()
+    if course not in chapters:
+        raise ValueError("This chapter is no longer available. Refresh and select a chapter again.")
     if not uploaded or not uploaded.filename.lower().endswith(".xlsx"):
         raise ValueError("Select an .xlsx workbook.")
     content = uploaded.stream.read(MAX_FILE_BYTES + 1)
@@ -60,7 +77,7 @@ def read_upload():
     for question in questions:
         if question["question_id"].casefold() in existing:
             errors.append({"row": question["row"], "errors": ["This question ID already exists in this course."]})
-    return course, content, questions, errors
+    return course, content, questions, errors, str(chapters[course].get("label") or course)
 
 
 @bp.get("/")
@@ -73,8 +90,16 @@ def index():
     courses = [row[0] for row in db.session.query(BankQuestion.course).filter_by(owner_id=current_user.id).distinct().order_by(BankQuestion.course).all()]
     if course:
         query = query.filter_by(course=course)
+    chapter_error = ""
+    try:
+        chapters = available_chapters()
+    except KnowledgeServiceError:
+        chapters = {}
+        chapter_error = "Course chapters are temporarily unavailable. Please retry shortly."
+    if not chapters and not chapter_error:
+        chapter_error = "Upload course notes from the dashboard before importing questions."
     pagination = query.order_by(BankQuestion.created_at.desc(), BankQuestion.id).paginate(page=page, per_page=25, error_out=False)
-    return render_template("question_bank.html", pagination=pagination, courses=courses, course=course, csrf=session["bank_csrf"])
+    return render_template("question_bank.html", pagination=pagination, courses=courses, course=course, csrf=session["bank_csrf"], chapters=chapters, chapter_error=chapter_error)
 
 
 @bp.get("/template")
@@ -131,7 +156,9 @@ def template():
 def preview():
     session.pop("bank_preview_nonce", None)
     try:
-        course, content, questions, errors = read_upload()
+        course, content, questions, errors, course_label = read_upload()
+    except KnowledgeServiceError:
+        return jsonify(error="Course chapters are temporarily unavailable. Please retry."), 503
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     token = None
@@ -139,7 +166,7 @@ def preview():
         nonce = secrets.token_hex(16)
         session["bank_preview_nonce"] = nonce
         token = signer().dumps(dict(owner=current_user.id, course=course, digest=hashlib.sha256(content).hexdigest(), nonce=nonce))
-    return render_template("question_bank_preview.html", course=course, questions=questions, errors=errors, token=token)
+    return render_template("question_bank_preview.html", course=course, course_label=course_label, questions=questions, errors=errors, token=token)
 
 
 @bp.post("/confirm")
@@ -150,7 +177,9 @@ def confirm():
     except (BadSignature, SignatureExpired):
         return jsonify(error="Preview expired or missing. Validate the file again."), 400
     try:
-        course, content, questions, errors = read_upload()
+        course, content, questions, errors, course_label = read_upload()
+    except KnowledgeServiceError:
+        return jsonify(error="Course chapters are temporarily unavailable. Please retry."), 503
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     if errors:
