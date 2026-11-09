@@ -18,6 +18,7 @@ import zipfile
 from typing import Any
 
 from openpyxl import load_workbook
+from common.question_bank_extended import QUESTION_HEADERS, parse_extended
 from sqlalchemy import or_
 
 from common.models import BankQuestion, TeacherQuestionBankItem, db
@@ -48,12 +49,15 @@ def parse_workbook(content):
     except Exception as exc:
         raise ValueError("Invalid Excel workbook. Please use the .xlsx template.") from exc
     try:
-        sheet = book.active
+        sheet = book["Questions"] if "Questions" in book.sheetnames else book.active
         # Iterate actual cells as well: producer dimension metadata is not reliable.
         sheet.reset_dimensions()
         rows = sheet.iter_rows()
         first = next(rows, ())
-        if [str(c.value or "").strip() for c in first] != HEADERS:
+        header = [str(c.value or "").strip() for c in first]
+        if header == QUESTION_HEADERS:
+            return parse_extended(book)
+        if header != HEADERS:
             raise ValueError("Column headers must match the downloaded template exactly.")
         questions, errors, seen = [], [], set()
         for number, cells in enumerate(rows, 2):
