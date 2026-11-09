@@ -57,7 +57,11 @@ def available_chapters():
 
 
 def read_upload():
-    course = request.form.get("course", "").strip()
+    # The exercise setup control posts chapter_id. Keep course for older clients.
+    chapter_id = request.form.get("chapter_id")
+    course = (chapter_id if chapter_id is not None else request.form.get("course", "")).strip()
+    if chapter_id is not None and "course" in request.form and request.form["course"].strip() != course:
+        raise ValueError("Conflicting chapter selections. Select a chapter and preview again.")
     uploaded = request.files.get("file")
     if not course or len(course) > 160:
         raise ValueError("Select an available course-note chapter.")
