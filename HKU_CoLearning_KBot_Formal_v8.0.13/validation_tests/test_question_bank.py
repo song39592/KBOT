@@ -2,6 +2,7 @@ import io
 import re
 import zipfile
 import pytest
+from types import SimpleNamespace
 from openpyxl import Workbook, load_workbook
 from common.models import BankQuestion, db, User
 from common.question_bank import HEADERS, parse_workbook
@@ -23,6 +24,10 @@ def client(tmp_path):
     app = create_app(dict(TESTING=True, SECRET_KEY='bank-test', SQLALCHEMY_DATABASE_URI='sqlite://', TEACHER_CHROMA_ENABLED=False, TEACHER_CHROMA_PATH=str(tmp_path/'chroma'), LEGACY_TEACHER_COMPAT=False, SEED_DEMO_TEACHER=False))
     with app.app_context():
         db.session.add_all([User(username='teacher',role='teacher',password_hash=''),User(username='other',role='teacher',password_hash=''),User(username='student',role='student',password_hash='')]);db.session.commit()
+    app.extensions["knowledge_client"] = SimpleNamespace(chapters=lambda: [
+        {"id": "COMP101", "label": "Computing", "source_file": "notes.pdf"},
+        {"id": "OTHER", "label": "Other chapter", "source_file": "other.pdf"},
+    ])
     c = app.test_client()
     with c.session_transaction() as s:
         s['_user_id']='1';s['_fresh']=True
