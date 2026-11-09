@@ -6,6 +6,12 @@ Preview and confirmation both verify that the selected chapter still exists. The
 
 Set the core `KNOWLEDGE_READ_KEY` to match the Knowledge Service, in addition to the existing admin key. Existing imports stored under old course names remain visible and are not automatically migrated. The student app and its generation behavior are unchanged by this patch.
 
+## Reuse of student Exercise setup
+
+The teacher form copies the existing `select-group` / `custom-select` chapter control from `student_app/templates/exercise_setup.html`: same `chapter_id` field, placeholder, chapter IDs, labels, source filenames, page ranges and disabled state. The teacher template supplies its chapter dictionary values as the list expected by that control. The original student template and JavaScript remain unchanged; teacher uploads retain their existing preview/confirmation handler.
+
+New form submissions use `chapter_id`; the backend still accepts the prior `course` field for existing callers and rejects conflicting simultaneous values. A regression test compares the teacher option values and labels against the original student control rendered with the same live chapter data.
+
 ## Included PR #3
 
 This branch integrates PR #3 (`feature/teacher-bank-extended`, 9ad0ac6): Matching, Fill Blank and Short Answer templates, validation, preview, confirmation, detail storage and owner-scoped listing, alongside the existing TF/MCQ format. All five formats now use the chapter dropdown. The additive `teacher_bank_question_details` table is created by the existing teacher startup `db.create_all()`. This does not add student retrieval or automatic grading for the three extended types.
@@ -29,4 +35,4 @@ Run `python -m pytest validation_tests tests/test_teacher_chapter_selection.py -
 
 The five supplied ELEC6098 PDFs were parsed by the actual Knowledge Service and yielded five selectable chapter IDs (374 chunks total). Browser verification covered chapter selection, preview, confirmation and the resulting question list. Course files, credentials and generated knowledge stores are not included in the repository. Docker/MySQL deployment has not been run locally.
 
-Final integrated regression: 188 passed, 5 failed, 30 subtests passed. The five failures match those individually reproduced on unchanged main df9e68f: two teacher template expectations/render-context checks, the pre-existing numeric-zero objective-answer integration failure, and two short-answer citation-count expectations. The student_app directory and student bank-first tests are byte-for-byte unchanged from main.
+Final integrated regression: 190 passed, 5 failed, 30 subtests passed. The five failures match those individually reproduced on unchanged main df9e68f: two teacher template expectations/render-context checks, the pre-existing numeric-zero objective-answer integration failure, and two short-answer citation-count expectations. The student_app directory and student bank-first tests are byte-for-byte unchanged from main.
