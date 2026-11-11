@@ -8,8 +8,10 @@ from student_app.app import create_app as create_student_app
 from teacher_app.app import create_app as create_teacher_app
 
 from tests.test_http_integration import (
+    correct_answer,
     get_chapter_id,
     register,
+    server_quiz,
     student_config,
     upload_real_pdf,
 )
@@ -342,3 +344,73 @@ def test_failed_topic_and_failed_empty_retry_still_reports_failure(knowledge_ser
     assert generated.status_code == 409
     assert generated.get_json()["can_skip"] is True
     assert calls == ["Economic", ""]
+
+
+def test_blank_topic_bank_fallback_is_only_for_current_type(knowledge_server, real_pdf, tmp_path, monkeypatch):
+    import student_app.blueprints.exercise as exercise
+    from common.quiz_engine import QuizUnavailableError
+
+    upload_real_pdf(knowledge_server, real_pdf)
+    student = create_student_app(student_config(knowledge_server, tmp_path))
+    client = student.test_client()
+    register(client, "blank_bank_flow")
+    chapter_id = get_chapter_id(knowledge_server)
+    row_id = _seed_excel_bank_row(student, course=chapter_id, topic="")
+    with student.app_context():
+        owner_id = db.session.get(BankQuestion, row_id).owner_id
+        db.session.add(BankQuestion(
+            owner_id=owner_id, course=chapter_id, question_id="MCQ-BLANK-TOPIC",
+            question_type="MCQ", topic="", question="Which technology provides positioning?",
+            options={"A": "GPS", "B": "GSM", "C": "Bluetooth", "D": "Wi-Fi"},
+            correct_answer="A", explanation="GPS provides satellite positioning.",
+            source="teacher_upload",
+        ))
+        db.session.commit()
+
+    calls = []
+
+    def fail_topic_only(quiz_type, topic, *args, **kwargs):
+        calls.append((quiz_type, topic))
+        if topic:
+            message = (
+                "The system could not construct four coherent MCQ options."
+                if quiz_type == "mcq"
+                else "No relevant course-note content was found for this topic."
+            )
+            raise QuizUnavailableError(message)
+        raise QuizUnavailableError("Matching is unavailable in this test.")
+
+    monkeypatch.setattr(exercise, "_generate_with_recovery", fail_topic_only)
+    assert client.post("/api/exercise/setup", json={"chapter_id": chapter_id}).status_code == 200
+    for quiz_type in ("true_false", "mcq"):
+        body = {"quiz_type": quiz_type}
+        if quiz_type == "true_false":
+            body["topic"] = "Economic"
+        generated = client.post(
+            "/api/exercise/generate", json=body,
+        )
+        assert generated.status_code == 200, generated.get_data(as_text=True)
+        payload = generated.get_json()
+        assert payload["from_question_bank"] is True
+        assert payload["topic"] == "Economic"
+        assert 'topic "Economic"' in payload["fallback_notice"]
+        assert "The next question type will try your topic again." in payload["fallback_notice"]
+        answered = client.post("/api/exercise/submit", json={
+            "quiz_id": payload["quiz_id"], "answer": str(correct_answer(server_quiz(student, client))),
+        })
+        assert answered.status_code == 200, answered.get_data(as_text=True)
+        assert answered.get_json()["is_correct"] is True
+        with client.session_transaction() as browser_session:
+            assert browser_session["quiz_topic"] == "Economic"
+
+    # The type after the failed MCQ starts with Economic again, even though
+    # both bank questions have an empty topic. Only its own retry is blank.
+    generated = client.post("/api/exercise/generate", json={"quiz_type": "matching"})
+    assert generated.status_code == 409, generated.get_data(as_text=True)
+    assert generated.get_json()["can_skip"] is True
+    with client.session_transaction() as browser_session:
+        assert browser_session["quiz_topic"] == "Economic"
+    assert calls == [
+        ("true_false", "Economic"), ("mcq", "Economic"),
+        ("matching", "Economic"), ("matching", ""),
+    ]

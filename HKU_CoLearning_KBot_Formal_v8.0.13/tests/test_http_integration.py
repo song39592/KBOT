@@ -170,7 +170,7 @@ def test_routes_registration_login_sequential_flow_notes_and_teacher_offline(kno
     assert login.status_code == 200
 
 
-def test_invalid_first_topic_does_not_lock_or_override_the_next_topic(knowledge_server, real_pdf, tmp_path):
+def test_unmatched_first_topic_falls_back_and_stale_unvalidated_topic_is_repaired(knowledge_server, real_pdf, tmp_path):
     upload_real_pdf(knowledge_server, real_pdf)
     student = create_student_app(student_config(knowledge_server, tmp_path))
     client = student.test_client()
@@ -182,11 +182,13 @@ def test_invalid_first_topic_does_not_lock_or_override_the_next_topic(knowledge_
         "/api/exercise/generate",
         json={"quiz_type": "true_false", "topic": "linear algebra"},
     )
-    assert invalid.status_code == 409
-    assert "No relevant course-note content" in invalid.get_json()["error"]
+    assert invalid.status_code == 200, invalid.get_data(as_text=True)
+    assert invalid.get_json()["topic"] == "linear algebra"
+    assert "whole chapter" in invalid.get_json()["fallback_notice"]
     with client.session_transaction() as browser_session:
-        assert not browser_session.get("quiz_topic")
+        assert browser_session["quiz_topic"] == "linear algebra"
 
+    assert client.post("/api/exercise/setup", json={"chapter_id": chapter_id}).status_code == 200
     valid = client.post(
         "/api/exercise/generate",
         json={"quiz_type": "true_false", "topic": "GPS"},
