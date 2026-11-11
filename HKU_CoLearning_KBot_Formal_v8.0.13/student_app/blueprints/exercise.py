@@ -85,12 +85,15 @@ def _has_saved_quiz(record: QuizSession, quiz_type: str | None = None) -> bool:
 
 def _has_validated_topic(record: QuizSession) -> bool:
     # History is appended only after a grounded question has been generated.
+    # Bank questions may lack a course fact key; their saved fingerprint still
+    # proves that a question was served and keeps the original flow topic.
     # A skip is permitted only after topic-scoped retrieval succeeded and both
     # primary and local recovery generation failed, so an audited skip also
     # validates the locked topic.
     return (
         _has_saved_quiz(record)
         or bool(_history(record).get("facts"))
+        or bool(_history(record).get("fingerprints"))
         or bool(_loads(getattr(record, "skipped_types_json", "[]"), []))
     )
 
@@ -642,11 +645,6 @@ def generate_action():
             raise
         except Exception as topic_exc:
             if not generation_topic:
-                raise
-            if not topic_is_locked and "No relevant course-note content" in str(topic_exc):
-                # A first-time topic with no course evidence at all is a typo or
-                # off-course input: report it so the learner can enter another
-                # topic instead of locking an unusable one.
                 raise
             # The entered topic cannot produce this question type. Retry this
             # one question as if the topic were blank (chapter bank first, then
