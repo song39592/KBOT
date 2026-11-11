@@ -8,8 +8,10 @@ from student_app.app import create_app as create_student_app
 from teacher_app.app import create_app as create_teacher_app
 
 from tests.test_http_integration import (
+    correct_answer,
     get_chapter_id,
     register,
+    server_quiz,
     student_config,
     upload_real_pdf,
 )
@@ -260,3 +262,155 @@ def test_teacher_question_bank_items_route(tmp_path, knowledge_server):
     assert payload["written"] == 1
     with teacher.app_context():
         assert TeacherQuestionBankItem.query.filter_by(question_fingerprint="route-fp-1").count() == 1
+
+
+
+def _fail_for_topic(original, failing_topic=None):
+    """Make generation fail for a non-empty topic; optionally pass empty topic through."""
+    from common.quiz_engine import QuizUnavailableError
+
+    def wrapper(quiz_type, topic, *args, **kwargs):
+        if topic or original is None:
+            raise QuizUnavailableError("The system could not construct four coherent MCQ options.")
+        return original(quiz_type, topic, *args, **kwargs)
+
+    return wrapper
+
+
+def test_failed_topic_retries_as_empty_using_chapter_bank(knowledge_server, real_pdf, tmp_path, monkeypatch):
+    import student_app.blueprints.exercise as exercise
+
+    upload_real_pdf(knowledge_server, real_pdf)
+    student = create_student_app(student_config(knowledge_server, tmp_path))
+    client = student.test_client()
+    register(client, "empty_retry_bank")
+    chapter_id = get_chapter_id(knowledge_server)
+    _seed_excel_bank_row(student, course=chapter_id, topic="GPS", question_id="TF-GPS-FB")
+    monkeypatch.setattr(exercise, "_generate_with_recovery", _fail_for_topic(None))
+
+    assert client.post("/api/exercise/setup", json={"chapter_id": chapter_id}).status_code == 200
+    generated = client.post("/api/exercise/generate", json={"quiz_type": "true_false", "topic": "Economic"})
+    assert generated.status_code == 200, generated.get_data(as_text=True)
+    payload = generated.get_json()
+    assert payload["from_question_bank"] is True
+    assert payload["quiz"]["question"] == BANK_QUESTION
+    assert payload["topic"] == "Economic"  # learner topic kept for next types
+    assert "whole chapter" in payload["fallback_notice"]
+    with client.session_transaction() as flask_session:
+        assert flask_session["quiz_topic"] == "Economic"
+
+
+def test_failed_topic_retries_as_empty_using_chapter_wide_ai(knowledge_server, real_pdf, tmp_path, monkeypatch):
+    import student_app.blueprints.exercise as exercise
+
+    upload_real_pdf(knowledge_server, real_pdf)
+    student = create_student_app(student_config(knowledge_server, tmp_path))
+    client = student.test_client()
+    register(client, "empty_retry_ai")
+    chapter_id = get_chapter_id(knowledge_server)
+    monkeypatch.setattr(
+        exercise, "_generate_with_recovery", _fail_for_topic(exercise._generate_with_recovery),
+    )
+
+    assert client.post("/api/exercise/setup", json={"chapter_id": chapter_id}).status_code == 200
+    generated = client.post("/api/exercise/generate", json={"quiz_type": "true_false", "topic": "Economic"})
+    assert generated.status_code == 200, generated.get_data(as_text=True)
+    payload = generated.get_json()
+    assert payload["from_question_bank"] is False
+    assert payload["generated_by_ai"] is True
+    assert payload["quiz"]["question"]
+    assert payload["topic"] == "Economic"
+    assert "whole chapter" in payload["fallback_notice"]
+
+
+def test_failed_topic_and_failed_empty_retry_still_reports_failure(knowledge_server, real_pdf, tmp_path, monkeypatch):
+    import student_app.blueprints.exercise as exercise
+
+    upload_real_pdf(knowledge_server, real_pdf)
+    student = create_student_app(student_config(knowledge_server, tmp_path))
+    client = student.test_client()
+    register(client, "empty_retry_fails")
+    chapter_id = get_chapter_id(knowledge_server)
+    calls = []
+
+    def always_fail(quiz_type, topic, *args, **kwargs):
+        from common.quiz_engine import QuizUnavailableError
+        calls.append(topic)
+        raise QuizUnavailableError("The system could not construct four coherent MCQ options.")
+
+    monkeypatch.setattr(exercise, "_generate_with_recovery", always_fail)
+    assert client.post("/api/exercise/setup", json={"chapter_id": chapter_id}).status_code == 200
+    generated = client.post("/api/exercise/generate", json={"quiz_type": "true_false", "topic": "Economic"})
+    assert generated.status_code == 409
+    assert generated.get_json()["can_skip"] is True
+    assert calls == ["Economic", ""]
+
+
+def test_blank_topic_bank_fallback_is_only_for_current_type(knowledge_server, real_pdf, tmp_path, monkeypatch):
+    import student_app.blueprints.exercise as exercise
+    from common.quiz_engine import QuizUnavailableError
+
+    upload_real_pdf(knowledge_server, real_pdf)
+    student = create_student_app(student_config(knowledge_server, tmp_path))
+    client = student.test_client()
+    register(client, "blank_bank_flow")
+    chapter_id = get_chapter_id(knowledge_server)
+    row_id = _seed_excel_bank_row(student, course=chapter_id, topic="")
+    with student.app_context():
+        owner_id = db.session.get(BankQuestion, row_id).owner_id
+        db.session.add(BankQuestion(
+            owner_id=owner_id, course=chapter_id, question_id="MCQ-BLANK-TOPIC",
+            question_type="MCQ", topic="", question="Which technology provides positioning?",
+            options={"A": "GPS", "B": "GSM", "C": "Bluetooth", "D": "Wi-Fi"},
+            correct_answer="A", explanation="GPS provides satellite positioning.",
+            source="teacher_upload",
+        ))
+        db.session.commit()
+
+    calls = []
+
+    def fail_topic_only(quiz_type, topic, *args, **kwargs):
+        calls.append((quiz_type, topic))
+        if topic:
+            message = (
+                "The system could not construct four coherent MCQ options."
+                if quiz_type == "mcq"
+                else "No relevant course-note content was found for this topic."
+            )
+            raise QuizUnavailableError(message)
+        raise QuizUnavailableError("Matching is unavailable in this test.")
+
+    monkeypatch.setattr(exercise, "_generate_with_recovery", fail_topic_only)
+    assert client.post("/api/exercise/setup", json={"chapter_id": chapter_id}).status_code == 200
+    for quiz_type in ("true_false", "mcq"):
+        body = {"quiz_type": quiz_type}
+        if quiz_type == "true_false":
+            body["topic"] = "Economic"
+        generated = client.post(
+            "/api/exercise/generate", json=body,
+        )
+        assert generated.status_code == 200, generated.get_data(as_text=True)
+        payload = generated.get_json()
+        assert payload["from_question_bank"] is True
+        assert payload["topic"] == "Economic"
+        assert 'topic "Economic"' in payload["fallback_notice"]
+        assert "The next question type will try your topic again." in payload["fallback_notice"]
+        answered = client.post("/api/exercise/submit", json={
+            "quiz_id": payload["quiz_id"], "answer": str(correct_answer(server_quiz(student, client))),
+        })
+        assert answered.status_code == 200, answered.get_data(as_text=True)
+        assert answered.get_json()["is_correct"] is True
+        with client.session_transaction() as browser_session:
+            assert browser_session["quiz_topic"] == "Economic"
+
+    # The type after the failed MCQ starts with Economic again, even though
+    # both bank questions have an empty topic. Only its own retry is blank.
+    generated = client.post("/api/exercise/generate", json={"quiz_type": "matching"})
+    assert generated.status_code == 409, generated.get_data(as_text=True)
+    assert generated.get_json()["can_skip"] is True
+    with client.session_transaction() as browser_session:
+        assert browser_session["quiz_topic"] == "Economic"
+    assert calls == [
+        ("true_false", "Economic"), ("mcq", "Economic"),
+        ("matching", "Economic"), ("matching", ""),
+    ]

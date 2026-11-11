@@ -314,8 +314,9 @@ function setupExercise(quizType, autoGenerate = false, fixedTopic = "") {
       const form = answerControl(quiz);
       target.append(form);
       // References and answer keys remain hidden until after submission.
-      status.textContent = data.diversity_notice || "";
-      status.className = data.diversity_notice ? "status-message" : "status-message hidden";
+      const notice = data.fallback_notice || data.diversity_notice || "";
+      status.textContent = notice;
+      status.className = notice ? "status-message" : "status-message hidden";
 
       form.addEventListener("submit", async (event) => {
         event.preventDefault();

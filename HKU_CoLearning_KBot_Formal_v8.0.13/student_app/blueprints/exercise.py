@@ -85,12 +85,15 @@ def _has_saved_quiz(record: QuizSession, quiz_type: str | None = None) -> bool:
 
 def _has_validated_topic(record: QuizSession) -> bool:
     # History is appended only after a grounded question has been generated.
+    # Bank questions may lack a course fact key; their saved fingerprint still
+    # proves that a question was served and keeps the original flow topic.
     # A skip is permitted only after topic-scoped retrieval succeeded and both
     # primary and local recovery generation failed, so an audited skip also
     # validates the locked topic.
     return (
         _has_saved_quiz(record)
         or bool(_history(record).get("facts"))
+        or bool(_history(record).get("fingerprints"))
         or bool(_loads(getattr(record, "skipped_types_json", "[]"), []))
     )
 
@@ -219,6 +222,12 @@ def _generation_response(existing: dict[str, Any], current: str, topic: str) -> 
         "generated_by_ai": generated_by_ai,
         "from_question_bank": from_bank,
         "source_label": source_label,
+        "fallback_notice": (
+            f"No question could be generated for the topic \"{existing.get('topic') or topic}\", "
+            "so a question from the whole chapter is shown instead. "
+            "The next question type will try your topic again."
+            if existing.get("chapter_fallback") else ""
+        ),
         "diversity_notice": (
             "The relevant unused knowledge pool is exhausted, so a related fact may repeat."
             if existing.get("coverage_exhausted") else ""
@@ -504,6 +513,55 @@ def quiz_page(quiz_type: str):
     )
 
 
+def _serve_bank_hit(
+    bank_hit: dict[str, Any],
+    record_id: str,
+    marker_raw: str,
+    current: str,
+    topic: str,
+    request_id: str,
+    request_started_at: float,
+    *,
+    chapter_fallback: bool = False,
+):
+    """Persist a bank hit as the active draft and return the generate response.
+
+    With ``chapter_fallback`` the hit came from the same chapter but a
+    different bank topic; the locked flow topic is kept unchanged so the
+    remaining question types still target the learner's topic.
+    """
+    bank_topic = topic if topic else str(bank_hit.get("topic") or "").strip()
+    draft = _draft_from_bank_hit(bank_hit, current, bank_topic)
+    if chapter_fallback:
+        draft["bank_topic"] = str(bank_hit.get("topic") or "").strip()
+        draft["chapter_fallback"] = True
+    draft_raw = json.dumps(draft, ensure_ascii=False)
+    updated = (
+        db.session.query(QuizSession)
+        .filter(QuizSession.id == record_id, QuizSession.current_quiz_json == marker_raw)
+        .update({QuizSession.current_quiz_json: draft_raw}, synchronize_session=False)
+    )
+    if updated != 1:
+        db.session.rollback()
+        current_app.logger.error(
+            "Bank ownership was lost request=%s session=%s", request_id, record_id,
+        )
+        return jsonify({"ok": False, "error": "The question request was superseded. Please retry."}), 409
+    db.session.commit()
+    db.session.expire_all()
+    record = db.session.get(QuizSession, record_id)
+    if bank_topic:
+        session["quiz_topic"] = bank_topic
+    _clear_generation_failure(record, current)
+    _append_bank_history(record, draft)
+    db.session.commit()
+    current_app.logger.info(
+        "Exercise served from question bank request=%s type=%s topic=%r chapter_fallback=%s total=%.3fs",
+        request_id, current, bank_topic, chapter_fallback, time.perf_counter() - request_started_at,
+    )
+    return jsonify(_generation_response(draft, current, bank_topic))
+
+
 @bp.post("/api/exercise/generate")
 @student_login_required
 def generate_action():
@@ -570,41 +628,48 @@ def generate_action():
         chapter_label=chapter_label,
     )
     if bank_hit is not None:
-        bank_topic = topic if topic else str(bank_hit.get("topic") or "").strip()
-        draft = _draft_from_bank_hit(bank_hit, current, bank_topic)
-        draft_raw = json.dumps(draft, ensure_ascii=False)
-        updated = (
-            db.session.query(QuizSession)
-            .filter(QuizSession.id == record_id, QuizSession.current_quiz_json == marker_raw)
-            .update({QuizSession.current_quiz_json: draft_raw}, synchronize_session=False)
+        return _serve_bank_hit(
+            bank_hit, record_id, marker_raw, current, topic, request_id, request_started_at,
         )
-        if updated != 1:
-            db.session.rollback()
-            current_app.logger.error(
-                "Bank ownership was lost request=%s session=%s", request_id, record_id,
-            )
-            return jsonify({"ok": False, "error": "The question request was superseded. Please retry."}), 409
-        db.session.commit()
-        db.session.expire_all()
-        record = db.session.get(QuizSession, record_id)
-        if bank_topic:
-            session["quiz_topic"] = bank_topic
-        _clear_generation_failure(record, current)
-        _append_bank_history(record, draft)
-        db.session.commit()
-        current_app.logger.info(
-            "Exercise served from question bank request=%s type=%s topic=%r total=%.3fs",
-            request_id, current, bank_topic, time.perf_counter() - request_started_at,
-        )
-        return jsonify(_generation_response(draft, current, bank_topic))
 
     # No bank hit: generate (AI / local). Keep generation_topic empty for
     # chapter-wide random retrieval + True/False statement selection.
     generation_topic = "" if open_ended else topic
+    chapter_fallback = False
     try:
-        generated, timings, topic_evidence = _generate_with_recovery(
-            current, generation_topic, chapter_id, history, record_id,
-        )
+        try:
+            generated, timings, topic_evidence = _generate_with_recovery(
+                current, generation_topic, chapter_id, history, record_id,
+            )
+        except KnowledgeServiceError:
+            raise
+        except Exception as topic_exc:
+            if not generation_topic:
+                raise
+            # The entered topic cannot produce this question type. Retry this
+            # one question as if the topic were blank (chapter bank first, then
+            # chapter-wide generation). The locked flow topic is kept, so the
+            # next question type tries the learner's topic again.
+            current_app.logger.info(
+                "Topic-scoped generation failed; retrying with empty topic request=%s type=%s topic=%r reason=%s",
+                request_id, current, generation_topic, topic_exc,
+            )
+            fallback_hit = pick_question(
+                chapter_id,
+                current,
+                "",
+                history.get("fingerprints", []),
+                chapter_label=chapter_label,
+            )
+            if fallback_hit is not None:
+                return _serve_bank_hit(
+                    fallback_hit, record_id, marker_raw, current, topic, request_id,
+                    request_started_at, chapter_fallback=True,
+                )
+            generated, timings, topic_evidence = _generate_with_recovery(
+                current, "", chapter_id, history, record_id,
+            )
+            chapter_fallback = True
     except KnowledgeServiceError:
         record = _release_generation_claim(record_id, marker_raw)
         current_app.logger.warning(
@@ -660,8 +725,8 @@ def generate_action():
     generation_finished_at = time.perf_counter()
     timing_text = " ".join(f"{name}={value:.3f}s" for name, value in sorted(timings.items()))
     current_app.logger.info(
-        "Exercise generated request=%s type=%s topic=%r source=%s %s total=%.3fs",
-        request_id, current, generation_topic, generated.generation_source, timing_text,
+        "Exercise generated request=%s type=%s topic=%r chapter_fallback=%s source=%s %s total=%.3fs",
+        request_id, current, generation_topic, chapter_fallback, generated.generation_source, timing_text,
         generation_finished_at - request_started_at,
     )
 
@@ -687,6 +752,7 @@ def generate_action():
         "quiz_type": current,
         "fingerprint": generated.question_fingerprint,
         "coverage_exhausted": generated.coverage_exhausted,
+        "chapter_fallback": chapter_fallback,
     }
     # The generation marker is the cross-process ownership token.  Only this
     # request can replace it with the final draft.
