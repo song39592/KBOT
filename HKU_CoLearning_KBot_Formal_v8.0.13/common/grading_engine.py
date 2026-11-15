@@ -18,7 +18,7 @@ def normalize_answer(value: object) -> str:
 
 
 def _selected_index(value: object, options: list[str]) -> int:
-    raw = clean_text(value)
+    raw = clean_text(str(value) if value is not None else "")
     if len(raw) == 1 and raw.upper() in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
         return ord(raw.upper()) - ord("A")
     if raw.casefold() in {"true", "false"} and options == ["True", "False"]:
@@ -44,10 +44,13 @@ def grade_objective(quiz: dict[str, Any], answer: Any) -> dict[str, Any]:
         return {
             "is_correct": correct, "score": 100 if correct else 0,
             "reasoning": (
-                "Correct. The selected option agrees with the saved course-note evidence."
+                f"Correct. {quiz['options'][correct_index]} is the expected answer. "
                 if correct else
-                "Incorrect. The selected option does not answer the question according to the saved course-note evidence."
-            ),
+                f"You selected {quiz['options'][selected] if 0 <= selected < len(quiz['options']) else 'no valid option'}. "
+                f"The correct answer is {quiz['options'][correct_index]}. "
+            ) + (clean_text(quiz.get("explanation")) or
+                 (f"The statement to evaluate was: {quiz.get('question', '')}" if quiz_type == "true_false"
+                  else "Compare your choice with the reference answer for this question.")),
             "correct_answer": quiz["options"][correct_index], "citations": [], "insufficient_evidence": False,
             "grading_source": "local_objective",
         }
@@ -67,9 +70,23 @@ def grade_objective(quiz: dict[str, Any], answer: Any) -> dict[str, Any]:
             for index, term in enumerate(quiz.get("left", []))
             if index < len(expected) and 0 <= expected[index] < len(quiz.get("right", []))
         ]
+        pair_feedback = []
+        for index, term in enumerate(quiz.get("left", [])):
+            target = expected[index]
+            selected = parsed[index] if index < len(parsed) else -1
+            chosen = quiz["right"][selected] if 0 <= selected < len(quiz["right"]) else "No valid match"
+            pair_feedback.append({
+                "term": term, "selected": chosen, "correct_answer": quiz["right"][target],
+                "is_correct": selected == target,
+                "reasoning": (f"{term} → {quiz['right'][target]}" if selected == target else
+                              f"For {term}, you chose {chosen}; the supported match is {quiz['right'][target]}."),
+            })
         return {
             "is_correct": score == 100, "score": score,
-            "reasoning": f"{matched} of {len(expected)} pairs match the course-note definitions.",
+            "reasoning": f"{matched} of {len(expected)} pairs are correct. " + " ".join(
+                item["reasoning"] for item in pair_feedback if not item["is_correct"]
+            ) + (" " + clean_text(quiz.get("explanation")) if quiz.get("explanation") else ""),
+            "pair_feedback": pair_feedback,
             "correct_answer": correct_pairs, "citations": [], "insufficient_evidence": False,
             "grading_source": "local_objective",
         }
