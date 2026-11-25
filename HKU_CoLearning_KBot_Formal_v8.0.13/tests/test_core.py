@@ -1078,15 +1078,23 @@ class RelaxedKnowledgeRuleTests(unittest.TestCase):
         self.assertEqual(normalized["used_reference_ids"], [])
         self.assertFalse(normalized["insufficient_information"])
 
+        # Live answers now require explicitly labelled sections. Legacy records
+        # remain readable through normalize_notes, but cannot imply course support.
+        structured = json.dumps({"sections": [{
+            "kind": "outside_course", "text": "A concise general-knowledge explanation.",
+            "reference_ids": [],
+        }], "evidence_status": "unsupported"})
         result = answer_notes(
-            "Explain this concept.",
-            [],
-            StaticRouter(AgentKind.NOTES, raw),
-            "student",
+            "Explain packet switching.", [],
+            StaticRouter(AgentKind.NOTES, structured), "student",
         )
         self.assertEqual(result["answering_source"], "coze_notes_agent")
         self.assertEqual(result["citations"], [])
-        self.assertEqual(result["answer"], "A concise general-knowledge explanation.")
+        self.assertEqual(result["evidence_status"], "unsupported")
+        self.assertEqual(result["sections"][0]["kind"], "outside_course")
+        self.assertIn("A concise general-knowledge explanation.", result["answer"])
+        legacy = answer_notes("Explain packet switching.", [], StaticRouter(AgentKind.NOTES, raw), "student")
+        self.assertEqual(legacy["answering_source"], "local_fallback")
 
 
 class V3KnowledgeRuleRegressionTests(unittest.TestCase):

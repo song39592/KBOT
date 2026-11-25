@@ -23,6 +23,7 @@
       </div>
     </div>
 
+    <label for="notes_topic">Knowledge point (e.g. DNS or TCP)</label><input id="notes_topic" name="topic" maxlength="120" required>
     <label class="field-label" for="notes_question">Your question</label>
     <textarea id="notes_question" name="question" rows="5" maxlength="1000" required></textarea>
     <button class="btn-primary" type="submit" {% if not chapters %}disabled{% endif %}>Ask Notes</button>
@@ -31,8 +32,14 @@
 
   <article id="notes-answer" class="notes-answer hidden">
     <h2>Answer</h2>
-    <p class="answer-text"></p>
-    <div id="notes-citations" class="reference-list"></div>
+    <div class="answer-text"></div>
+    <details><summary>View course sources & highlighted excerpts</summary><div id="notes-citations" class="reference-list"></div></details>
+    <form id="notes-feedback">
+      <h3>Report a problem with this answer</h3>
+      <select name="category" aria-label="Problem type"><option value="incorrect">Incorrect answer</option><option value="incomplete">Incomplete answer</option><option value="citation">Incorrect citation</option><option value="other">Other</option></select>
+      <textarea name="comment" aria-label="Describe the problem" minlength="3" maxlength="2000" required placeholder="Please explain what should be corrected."></textarea>
+      <button type="submit" class="btn-primary">Send feedback to teacher</button><p class="message" aria-live="polite"></p>
+    </form>
   </article>
 </section>
 {% endblock %}
