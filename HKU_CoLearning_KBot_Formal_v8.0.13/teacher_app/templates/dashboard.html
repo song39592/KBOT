@@ -345,6 +345,7 @@
 </script>
 </head>
 <body class="bg-slate-50 text-slate-700 flex min-h-screen">
+<a id="notes-review-float" title="Click to open; drag to reposition" href="{{ url_for('notes_review.review') }}" data-drag-link="true" style="touch-action:none;user-select:none;cursor:grab;position:fixed;bottom:20px;right:24px;z-index:100;background:#007c68;color:white;padding:14px;border-radius:8px">Notes feedback & Top 10</a>
     <header class="moodle-topbar">
         <div class="moodle-topbar-left">
             <a href="/" class="moodle-brand" aria-label="HKU Co-Learning KBot">
@@ -1372,5 +1373,60 @@
         loadKnowledgeList();
         document.querySelectorAll('.row-checkbox').forEach(cb => cb.addEventListener('change', updateBatchBar));
     </script>
+<script>
+(() => {
+  const button = document.getElementById('notes-review-float');
+  const key = 'kbot-notes-button-position';
+  let drag = null, suppressClick = false;
+  function place(x, y) {
+    const rect = button.getBoundingClientRect();
+    const maxX = Math.max(0, window.innerWidth - rect.width - 8);
+    const maxY = Math.max(0, window.innerHeight - rect.height - 8);
+    button.style.left = Math.max(0, Math.min(x, maxX)) + 'px';
+    button.style.top = Math.max(0, Math.min(y, maxY)) + 'px';
+    button.style.right = 'auto'; button.style.bottom = 'auto';
+  }
+  try {
+    const saved = JSON.parse(localStorage.getItem(key));
+    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) place(saved.x, saved.y);
+  } catch (_) {}
+  button.addEventListener('dragstart', event => event.preventDefault());
+  button.addEventListener('pointerdown', event => {
+    if (!event.isPrimary || event.button !== 0) return;
+    const rect = button.getBoundingClientRect();
+    suppressClick = false;
+    drag = {id:event.pointerId, x:event.clientX, y:event.clientY, left:rect.left, top:rect.top, moved:false};
+    button.setPointerCapture(event.pointerId);
+  });
+  button.addEventListener('pointermove', event => {
+    if (!drag || drag.id !== event.pointerId) return;
+    const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+    if (Math.hypot(dx, dy) > 6) drag.moved = true;
+    if (drag.moved) {
+      button.style.cursor = 'grabbing';
+      place(drag.left + dx, drag.top + dy);
+    }
+  });
+  function finish(event) {
+    if (!drag || drag.id !== event.pointerId) return;
+    suppressClick = drag.moved;
+    if (drag.moved) {
+      const rect = button.getBoundingClientRect();
+      try { localStorage.setItem(key, JSON.stringify({x:rect.left,y:rect.top})); } catch (_) {}
+    }
+    drag = null; button.style.cursor = 'grab';
+    if (button.hasPointerCapture(event.pointerId)) button.releasePointerCapture(event.pointerId);
+  }
+  button.addEventListener('pointerup', finish);
+  button.addEventListener('pointercancel', finish);
+  button.addEventListener('lostpointercapture', finish);
+  button.addEventListener('click', event => {
+    if (suppressClick && event.detail !== 0) { event.preventDefault(); suppressClick = false; }
+  });
+  window.addEventListener('resize', () => {
+    const rect = button.getBoundingClientRect(); place(rect.left, rect.top);
+  });
+})();
+</script>
 </body>
 </html>

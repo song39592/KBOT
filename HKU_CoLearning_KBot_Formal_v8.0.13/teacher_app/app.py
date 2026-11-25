@@ -177,6 +177,8 @@ def create_app(overrides: dict | None = None) -> Flask:
     if app.config.get("TEACHER_SEMANTIC_MODEL_PATH"):
         app.config["TEACHER_SEMANTIC_MODEL_PATH"] = str(resolve_path(app.config["TEACHER_SEMANTIC_MODEL_PATH"]))
     app.register_blueprint(question_bank_bp)
+    from teacher_app.notes_review import bp as notes_review_bp
+    app.register_blueprint(notes_review_bp)
     db.init_app(app)
     record_index = ChromaRecordIndex(
         enabled=app.config["TEACHER_CHROMA_ENABLED"],

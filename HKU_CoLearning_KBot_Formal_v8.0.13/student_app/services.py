@@ -38,3 +38,11 @@ def agent_router() -> CozeAgentRouter:
         current_app.extensions["coze_agent_router"] = router
     return router
 
+
+
+def notes_router(web_search=False):
+    from common.config import env, env_bool
+    if env("NOTES_AI_PROVIDER", "coze") == "deepseek":
+        from common.deepseek_notes import DeepSeekNotesRouter
+        return DeepSeekNotesRouter(env("DEEPSEEK_API_KEY"), env("DEEPSEEK_MODEL", "deepseek-flash"), env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"), env_bool("NOTES_AI_ENABLED", True), web_search=web_search)
+    return agent_router()
