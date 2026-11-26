@@ -53,7 +53,11 @@ apply the old PR6 files over this version.
 - Chrome acceptance with an isolated SQLite database: Excel preview/import of
   A,C; legacy TF scoring; simultaneous MCQ selections; missing/extra choice
   feedback; feedback surviving beyond eight seconds; persisted History review.
-  Production Coze and MySQL/VM deployment were not exercised by this change.
+- MySQL 8 VM rollout exposed a legacy-collation mismatch while creating the new
+  Notes foreign-key tables. The Notes parent and dependent tables now explicitly
+  use `utf8mb4_unicode_ci`, matching the existing v6.2 schema even when the
+  database default is `utf8mb4_0900_ai_ci`. A MySQL DDL regression test covers
+  every affected table. Production Coze was not exercised by this change.
 
 ## VM rollout
 
@@ -80,6 +84,8 @@ sudo docker compose -p kbot-v81-home logs --tail=60 student teacher
 
 Both student and teacher need rebuilding: the template/editor lives in Teacher.
 No new dependency, database column change or external Agent setting is required.
+The application now supplies the legacy-compatible collation when it creates the
+new Notes tables; changing the database-wide default is not required.
 Restarting only Student would leave the old teacher template in place. The Notes
 changes in main are preserved in code; rollout of any other services required by
 those earlier changes should follow their own integration notes.
