@@ -91,14 +91,16 @@ function answerControl(quiz) {
   const form = makeNode("form", undefined, "answer-form");
   form.id = "answer-form";
   if (quiz.type === "true_false" || quiz.type === "mcq") {
+    const multiple = quiz.type === "mcq" && quiz.multiple_answers;
+    form.append(makeNode("p", multiple ? "Select all correct answers. Full credit requires all correct choices and no extra choices." : "Choose one answer.", "answer-instructions"));
     const grid = makeNode("div", undefined, "choice-grid");
     (quiz.options || []).forEach((option, index) => {
       const label = makeNode("label", undefined, "choice-btn");
       const input = document.createElement("input");
-      input.type = "radio";
+      input.type = multiple ? "checkbox" : "radio";
       input.name = "answer";
       input.value = String(index);
-      input.required = true;
+      input.required = !multiple;
       const marker = makeNode("span", String.fromCharCode(65 + index), "choice-marker");
       const text = makeNode("span", option, "choice-text");
       label.append(input, marker, text);
@@ -139,6 +141,7 @@ function answerControl(quiz) {
 
 function readStudentAnswer(form, quiz) {
   const values = new FormData(form);
+  if (quiz.type === "mcq" && quiz.multiple_answers) return values.getAll("answer").map(Number);
   if (quiz.type === "matching") {
     return (quiz.left || []).map((_term, index) => {
       const value = values.get(`match_${index}`);
@@ -221,7 +224,7 @@ function resultCard(result) {
     row.append(makeNode("strong", "Reference answer: "), document.createTextNode(formatReferenceAnswer(result.correct_answer)));
     card.append(row);
   }
-  if (result.explanation) {
+  if (result.explanation && !(result.feedback || "").includes(result.explanation)) {
     const row = makeNode("p", undefined, "feedback-explanation");
     row.append(makeNode("strong", "Explanation: "), document.createTextNode(result.explanation));
     card.append(row);
@@ -314,14 +317,20 @@ function setupExercise(quizType, autoGenerate = false, fixedTopic = "") {
       const form = answerControl(quiz);
       target.append(form);
       // References and answer keys remain hidden until after submission.
-      status.textContent = data.diversity_notice || "";
-      status.className = data.diversity_notice ? "status-message" : "status-message hidden";
+      const notice = [data.fallback_notice, data.match_notice, data.diversity_notice].filter(Boolean).join(" ");
+      status.textContent = notice;
+      status.className = notice ? "status-message" : "status-message hidden";
 
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         if (working) return;
         const submit = form.querySelector('button[type="submit"]');
         const answer = readStudentAnswer(form, quiz);
+        if (quiz.type === "mcq" && quiz.multiple_answers && answer.length === 0) {
+          status.textContent = "Select at least one answer before submitting.";
+          status.className = "error-msg";
+          return;
+        }
         if (quiz.type === "matching" && answer.some((item) => item === null || Number.isNaN(item))) {
           status.textContent = "Match every term before submitting.";
           status.className = "error-msg";
@@ -352,9 +361,9 @@ function setupExercise(quizType, autoGenerate = false, fixedTopic = "") {
           }
           const nextLabel = document.body.dataset.nextLabel || "next step";
           if (result.is_correct) {
-            status.textContent = "Correct. Moving to the next question type…";
+            status.textContent = "Correct. Review the explanation, then continue when ready.";
           } else {
-            status.textContent = `Incorrect. Generating another ${document.body.dataset.quizLabel || quizType} question…`;
+            status.textContent = `Incorrect. Review the explanation, then try another ${document.body.dataset.quizLabel || quizType} question when ready.`;
           }
           status.className = "status-message";
           const continueLabel = result.is_correct ? "Continue to the next question type" : `Try another ${document.body.dataset.quizLabel || quizType} question`;
@@ -363,7 +372,7 @@ function setupExercise(quizType, autoGenerate = false, fixedTopic = "") {
           target.append(continueLink);
           // Keep the reference answer and source page visible before following
           // the enforced sequence. The student may continue immediately.
-          window.setTimeout(() => window.location.assign(result.redirect), 8000);
+          // Keep feedback visible until the learner explicitly continues.
         } catch (error) {
           status.textContent = error.data?.recovery_hint ? `${error.message} ${error.data.recovery_hint}` : error.message;
           status.className = "error-msg";
