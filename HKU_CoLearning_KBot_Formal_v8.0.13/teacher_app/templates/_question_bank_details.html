@@ -14,6 +14,7 @@
 {% for blank in details.blanks %}<div><strong>{{blank.id}}</strong>: {{blank.accepted_answers|join(' / ')}}<br><small class="muted">{{'Ignore case' if blank.ignore_case else 'Case-sensitive'}} · trim surrounding spaces</small></div>{% endfor %}
 {% elif q.question_type == 'SHORT' %}
 <strong>Reference answer</strong><div>{{details.reference_answer}}</div><strong>Rubric · {{details.max_score}} points total</strong>{% for criterion in details.rubric %}<div>{{criterion.id}} · {{criterion.criterion}} ({{criterion.points}} points)</div>{% endfor %}
-{% else %}<strong>{{q.correct_answer}}</strong>{% endif %}
+{% elif q.question_type == "MCQ" %}<strong>{{q.correct_answer|list|join(", ")}}</strong>{% if q.correct_answer|length > 1 %}<div>Select all correct answers · exact-match grading</div>{% endif %}{% else %}<strong>{{q.correct_answer}}</strong>{% endif %}
 {% if q.explanation %}<div class="muted">{{q.explanation}}</div>{% endif %}
+{% if question_warnings is defined %}{% for warning in question_warnings(q) %}<p class="errors" role="note">Review: {{ warning }}</p>{% endfor %}{% endif %}
 {% endmacro %}

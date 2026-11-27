@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from .json_recovery import StructuredOutputError, coerce_bool, parse_json_like
+from .mcq_answers import correct_indices
 
 
 class QuizValidationError(ValueError):
@@ -175,8 +176,16 @@ def normalize_quiz(raw: str | dict[str, Any] | list[Any], expected_type: str, sh
 
     if expected == "mcq":
         options = [clean_text(item) for item in _list(_first(payload, "options", "choices", "answers", "items")) if clean_text(item)]
-        if len(options) != 4 or len({item.casefold() for item in options}) != 4:
-            raise QuizValidationError("MCQ must contain exactly four distinct options.")
+        if not 2 <= len(options) <= 5 or len({item.casefold() for item in options}) != len(options):
+            raise QuizValidationError("MCQ must contain two to five distinct options.")
+        if "correct_indices" in payload:
+            try:
+                indices = correct_indices({"options": options, "correct_indices": payload["correct_indices"]})
+            except ValueError as exc:
+                raise QuizValidationError(str(exc)) from exc
+            if not question:
+                raise QuizValidationError("MCQ output is incomplete.")
+            return {"type": expected, "question": question, "options": options, "correct_indices": indices, "explanation": explanation}
         has_correct_index = any(str(key).casefold() == "correct_index" for key in payload)
         correct = _index(_first(payload, "correct_index", "answer_index", "correct", "correct_answer", "answer"), options, explicitly_zero_based=has_correct_index)
         if not question or correct is None:

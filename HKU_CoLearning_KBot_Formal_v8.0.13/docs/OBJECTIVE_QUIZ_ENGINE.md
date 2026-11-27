@@ -22,7 +22,7 @@ This is lexical similarity, not semantic embedding search. If every available
 topic is unrelated, the nearest eligible question is still returned, as requested,
 with the notice. Empty/exhausted pools retain the existing generation path.
 
-Uploaded MATCH questions now enter the student flow. Their saved stable IDs
+Uploaded MATCHING questions (and legacy MATCH rows) now enter the student flow. Their saved stable IDs
 are mapped to shuffled right-side choices without truncating the 2–20 pairs
 supported by the teacher template. Missing or invalid mappings are skipped.
 
@@ -70,3 +70,26 @@ with the reviewed code and its static assets. Do not clear existing application
 or knowledge data. The live Coze Agent and production deployment have not been
 changed or verified by this work. The Markdown runtime prompt is authoritative
 for this change; the historical platform-prompt DOCX is unchanged.
+
+
+## Multi-answer update
+
+MCQ imports accept `A,C` in the unchanged correct_answer column. The downloaded
+objective template includes an annotated header and a separate copyable example.
+Agent MCQs may return `correct_indices: [0, 2]`; legacy `correct_index` remains
+valid. Each correct option must be grounded in the course context. Public drafts
+expose only `multiple_answers`, never correct indexes. Multiple answers use
+checkboxes and exact-set scoring: 100 for all and only correct choices, otherwise
+0, with missing and extra choices explained. No partial MCQ credit is awarded.
+
+Local recovery permits 2–4 coherent options when four cannot be constructed;
+imports and normalized Agent MCQs permit 2–5. Direct subject/property questions
+replace document-navigation stems such as "presented in course-note section".
+Matching filters years and navigation labels and groups related term definitions.
+These checks improve fallback quality; teacher review is still needed.
+
+Feedback waits for manual Continue. My History preserves feedback, explanations,
+per-pair review, sources and citations. Explanation editing is teacher/owner scoped
+and does not alter saved attempts. Existing Kahoot export is single-answer only:
+multi-answer records are excluded rather than silently exporting one answer.
+See [deployment and acceptance](QUIZ_MULTI_ANSWER_DEPLOYMENT.md).

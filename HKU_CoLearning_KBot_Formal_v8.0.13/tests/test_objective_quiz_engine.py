@@ -162,7 +162,7 @@ def test_objective_http_flow_bank_first_feedback_and_draft_reuse(bank_app, monke
 
 
 def test_bank_keeps_known_ai_origin_label():
-    public = _generation_response({"quiz_id": "q", "quiz": {"type": "mcq", "question": "Q?", "options": []},
+    public = _generation_response({"quiz_id": "q", "quiz": {"type": "mcq", "question": "Q?", "options": ["one", "two"], "correct_index": 0},
         "from_question_bank": True, "generation_source": "coze_quiz_agent"}, "mcq", "")
     assert public["from_question_bank"] and public["generated_by_ai"]
     assert public["source_label"] == "AI 生成 · From question bank"

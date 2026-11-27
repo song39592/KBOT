@@ -25,6 +25,7 @@ from common.question_bank_extended import QUESTION_HEADERS, parse_extended
 from sqlalchemy import or_
 
 from common.models import BankQuestion, TeacherQuestionBankItem, db
+from common.mcq_answers import answer_letters, correct_indices
 
 
 HEADERS = [
@@ -35,7 +36,7 @@ HEADERS = [
 MAX_FILE_BYTES = 5 * 1024 * 1024
 
 VALID_TYPES = {"true_false", "mcq", "matching", "fill_blank", "short_answer"}
-STUDENT_TO_BANK_TYPE = {"true_false": "TF", "mcq": "MCQ", "matching": "MATCH"}
+STUDENT_TO_BANK_TYPE = {"true_false": "TF", "mcq": "MCQ", "matching": "MATCHING"}
 BANK_TO_STUDENT_TYPE = {"TF": "true_false", "MCQ": "mcq"}
 
 
@@ -98,8 +99,10 @@ def parse_workbook(content):
             elif kind == "MCQ":
                 if len(options) < 2:
                     issues.append("MCQ requires at least two options.")
-                if answer not in options:
-                    issues.append("MCQ answer must be one existing option letter A–E.")
+                try:
+                    answer = "".join(answer_letters(answer, options))
+                except ValueError as exc:
+                    issues.append(str(exc))
                 if len({v.casefold() for v in options.values()}) != len(options):
                     issues.append("Duplicate option text is not accepted.")
             else:
@@ -160,7 +163,7 @@ def quiz_from_bank_question(row: BankQuestion) -> dict[str, Any] | None:
             "correct_index": 0 if answer == "TRUE" else 1,
             "explanation": explanation,
         }
-    if kind == "MATCH":
+    if kind in {"MATCH", "MATCHING"}:
         details = row.details.data if row.details else {}
         pairs = details.get("pairs", []) if isinstance(details, dict) else []
         mapping = details.get("correct_pairs", {}) if isinstance(details, dict) else {}
@@ -194,13 +197,16 @@ def quiz_from_bank_question(row: BankQuestion) -> dict[str, Any] | None:
         if len(letters) < 2:
             return None
         answer = str(row.correct_answer or "").strip().upper()
-        if answer not in letters:
+        try:
+            answers = answer_letters(answer, letters)
+        except ValueError:
             return None
+        key = {"correct_index": letters.index(answers[0])} if len(answers) == 1 else {"correct_indices": [letters.index(value) for value in answers]}
         return {
             "type": "mcq",
             "question": question,
             "options": [str(raw_options[letter]).strip() for letter in letters],
-            "correct_index": letters.index(answer),
+            **key,
             "explanation": explanation,
         }
     return None
@@ -219,12 +225,17 @@ def quiz_payload_from_item(item: TeacherQuestionBankItem) -> dict[str, Any] | No
         "question": question,
         "explanation": str(item.explanation or ""),
     }
-    for key in ("options", "correct_index", "left", "right", "correct_mapping", "answer", "reference", "key_points"):
+    for key in ("options", "correct_index", "correct_indices", "left", "right", "correct_mapping", "answer", "reference", "key_points"):
         if key in payload:
             quiz[key] = payload[key]
     quiz_type = quiz["type"]
     if quiz_type in {"true_false", "mcq"} and not quiz.get("options"):
         return None
+    if quiz_type in {"mcq", "true_false"}:
+        try:
+            correct_indices(quiz)
+        except ValueError:
+            return None
     if quiz_type == "matching":
         left, right, mapping = quiz.get("left"), quiz.get("right"), quiz.get("correct_mapping")
         if not all(isinstance(value, list) for value in (left, right, mapping)):
@@ -348,7 +359,7 @@ def pick_question(
     bank_type = STUDENT_TO_BANK_TYPE.get(quiz_type)
     if bank_type:
         course_keys = _course_keys(chapter_id, chapter_label)
-        rows = (BankQuestion.query.filter_by(question_type=bank_type)
+        rows = (BankQuestion.query.filter(BankQuestion.question_type.in_([bank_type, "MATCH"] if quiz_type == "matching" else [bank_type]))
                 .filter(or_(*[BankQuestion.course == key for key in course_keys]))
                 .order_by(BankQuestion.created_at.desc(), BankQuestion.id).all())
         for row in rows:

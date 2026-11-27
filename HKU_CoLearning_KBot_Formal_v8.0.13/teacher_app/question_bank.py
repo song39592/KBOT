@@ -2,12 +2,15 @@
 import hashlib
 import io
 import secrets
+import re
 from functools import wraps
 from flask import Blueprint, abort, current_app, jsonify, render_template, request, send_file, session, url_for
 from flask_login import current_user, login_required
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from openpyxl import Workbook
+from openpyxl.comments import Comment
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from common.knowledge_client import KnowledgeClient, KnowledgeServiceError
 from common.models import BankQuestion, BankQuestionDetails, db
 from common.question_bank import HEADERS, MAX_FILE_BYTES, parse_workbook
 from common.question_bank_extended import QUESTION_HEADERS, DETAIL_HEADERS
@@ -42,11 +45,65 @@ def signer():
     return URLSafeTimedSerializer(current_app.secret_key, salt="teacher-bank-import-v1")
 
 
+def available_chapters():
+    client = current_app.extensions.get("knowledge_client")
+    if client is None:
+        client = KnowledgeClient(
+            current_app.config["KNOWLEDGE_SERVICE_URL"],
+            read_key=current_app.config["KNOWLEDGE_READ_KEY"],
+            admin_key=current_app.config["KNOWLEDGE_ADMIN_KEY"],
+            timeout=current_app.config["KNOWLEDGE_TIMEOUT"],
+        )
+        current_app.extensions["knowledge_client"] = client
+    return {str(c["id"]): c for c in client.chapters() if c.get("id")}
+
+
+def explanation_warnings(question):
+    """A review hint, not a semantic correctness claim or an import blocker."""
+    get = question.get if isinstance(question, dict) else lambda key, default="": getattr(question, key, default)
+    explanation = str(get("explanation") or "").strip()
+    if not explanation:
+        return ["No explanation supplied. Add a reason that supports the correct answer."]
+    stop = {"the", "and", "are", "one", "which", "what", "does", "this", "that", "for", "with", "only", "from", "main", "chapter", "page"}
+    words = lambda text: {word for word in re.findall(r"[a-z]{3,}", text.lower()) if word not in stop}
+    question_terms = words(str(get("question") or ""))
+    options = get("options", {})
+    if isinstance(options, dict):
+        question_terms.update(words(" ".join(str(options.get(letter, "")) for letter in str(get("correct_answer") or "") if letter in "ABCDE")))
+    if question_terms and not question_terms & words(explanation):
+        return ["Explanation may not address this question. Review its relevance and source before use."]
+    return []
+
+
+@bp.post("/<question_id>/explanation")
+@teacher
+def update_explanation(question_id):
+    row = BankQuestion.query.filter_by(id=question_id, owner_id=current_user.id).first_or_404()
+    explanation = request.form.get("explanation", "").strip()
+    if not explanation or len(explanation) > 10000:
+        return jsonify(error="Provide an explanation of 1–10000 characters."), 400
+    row.explanation = explanation
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        return jsonify(error="Could not save the explanation. Please retry."), 500
+    from flask import redirect
+    return redirect(url_for("question_bank.index", course=row.course), code=303)
+
+
 def read_upload():
-    course = request.form.get("course", "").strip()
+    # The exercise setup control posts chapter_id. Keep course for older clients.
+    chapter_id = request.form.get("chapter_id")
+    course = (chapter_id if chapter_id is not None else request.form.get("course", "")).strip()
+    if chapter_id is not None and "course" in request.form and request.form["course"].strip() != course:
+        raise ValueError("Conflicting chapter selections. Select a chapter and preview again.")
     uploaded = request.files.get("file")
     if not course or len(course) > 160:
-        raise ValueError("Enter a course name/code of 1–160 characters.")
+        raise ValueError("Select an available course-note chapter.")
+    chapters = available_chapters()
+    if course not in chapters:
+        raise ValueError("This chapter is no longer available. Refresh and select a chapter again.")
     if not uploaded or not uploaded.filename.lower().endswith(".xlsx"):
         raise ValueError("Select an .xlsx workbook.")
     content = uploaded.stream.read(MAX_FILE_BYTES + 1)
@@ -60,7 +117,7 @@ def read_upload():
     for question in questions:
         if question["question_id"].casefold() in existing:
             errors.append({"row": question["row"], "errors": ["This question ID already exists in this course."]})
-    return course, content, questions, errors
+    return course, content, questions, errors, str(chapters[course].get("label") or course)
 
 
 @bp.get("/")
@@ -73,8 +130,16 @@ def index():
     courses = [row[0] for row in db.session.query(BankQuestion.course).filter_by(owner_id=current_user.id).distinct().order_by(BankQuestion.course).all()]
     if course:
         query = query.filter_by(course=course)
+    chapter_error = ""
+    try:
+        chapters = available_chapters()
+    except KnowledgeServiceError:
+        chapters = {}
+        chapter_error = "Course chapters are temporarily unavailable. Please retry shortly."
+    if not chapters and not chapter_error:
+        chapter_error = "Upload course notes from the dashboard before importing questions."
     pagination = query.order_by(BankQuestion.created_at.desc(), BankQuestion.id).paginate(page=page, per_page=25, error_out=False)
-    return render_template("question_bank.html", pagination=pagination, courses=courses, course=course, csrf=session["bank_csrf"])
+    return render_template("question_bank.html", pagination=pagination, courses=courses, course=course, csrf=session["bank_csrf"], chapters=chapters, chapter_error=chapter_error, question_warnings=explanation_warnings)
 
 
 @bp.get("/template")
@@ -86,10 +151,16 @@ def template():
     sheet.append(HEADERS)
     sheet.append(["TF001", "TF", "HTTP", "HTTP is stateless.", "", "", "", "", "", "TRUE", "HTTP itself does not retain session state."])
     sheet.append(["MCQ001", "MCQ", "DNS", "Which protocol resolves domain names?", "HTTP", "DNS", "SMTP", "FTP", "", "B", "DNS resolves domain names."])
+    sheet["J1"].comment = Comment("MCQ: enter one letter (B) or multiple letters separated by commas (A,C). Select all correct choices; no partial credit. TF: TRUE or FALSE.", "KBot")
     sheet.freeze_panes = "A2"
     kind = request.args.get("type", "OBJECTIVE").upper()
     if kind not in ("OBJECTIVE", "MATCHING", "FILL", "SHORT"):
         return jsonify(error="Template type must be OBJECTIVE, MATCHING, FILL or SHORT."), 400
+    if kind == "OBJECTIVE":
+        examples = book.create_sheet("Multi-answer example")
+        examples.append(HEADERS)
+        examples.append(["MCQ_MULTI001", "MCQ", "Web protocols", "Which protocols are used for web content transfer? Select all correct answers.", "HTTP", "SMTP", "HTTPS", "DNS", "", "A,C", "HTTP and HTTPS transfer web content; SMTP sends email and DNS resolves names."])
+        examples["J1"].comment = Comment("Copy this row to Questions to import it. Example sheets are not imported.", "KBot")
     if kind != "OBJECTIVE":
         book.remove(sheet)
         sheet = book.create_sheet("Questions")
@@ -131,7 +202,9 @@ def template():
 def preview():
     session.pop("bank_preview_nonce", None)
     try:
-        course, content, questions, errors = read_upload()
+        course, content, questions, errors, course_label = read_upload()
+    except KnowledgeServiceError:
+        return jsonify(error="Course chapters are temporarily unavailable. Please retry."), 503
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     token = None
@@ -139,7 +212,7 @@ def preview():
         nonce = secrets.token_hex(16)
         session["bank_preview_nonce"] = nonce
         token = signer().dumps(dict(owner=current_user.id, course=course, digest=hashlib.sha256(content).hexdigest(), nonce=nonce))
-    return render_template("question_bank_preview.html", course=course, questions=questions, errors=errors, token=token)
+    return render_template("question_bank_preview.html", course=course, course_label=course_label, questions=questions, errors=errors, token=token, question_warnings=explanation_warnings)
 
 
 @bp.post("/confirm")
@@ -150,7 +223,9 @@ def confirm():
     except (BadSignature, SignatureExpired):
         return jsonify(error="Preview expired or missing. Validate the file again."), 400
     try:
-        course, content, questions, errors = read_upload()
+        course, content, questions, errors, course_label = read_upload()
+    except KnowledgeServiceError:
+        return jsonify(error="Course chapters are temporarily unavailable. Please retry."), 503
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
     if errors:

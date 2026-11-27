@@ -12,6 +12,7 @@ from knowledge_service.retrieval import fingerprint, jaccard, lexical_score, tok
 from .config import coze_quiz_types
 from .coze_transport import AgentKind, CozeAgentRouter, CozeTransportError
 from .quiz_parser import QuizValidationError, clean_text, normalize_quiz
+from .mcq_answers import correct_indices
 
 
 QUIZ_TYPES = ("true_false", "mcq", "matching", "fill_blank", "short_answer")
@@ -887,6 +888,11 @@ def validate_grounding(
 ) -> None:
     context = _all_context(chunks)
     quiz_type = quiz["type"]
+    if quiz_type == "mcq" and re.search(
+        r"\b(?:presented|listed|appears?|found|stated)\s+(?:in|under|on)\s+(?:the\s+)?(?:course[- ]note|notes|section|chapter|slide)",
+        clean_text(quiz.get("question")), re.I,
+    ):
+        raise QuizValidationError("MCQ must test knowledge rather than document organization.")
     if quiz_type in {"mcq", "true_false", "matching"}:
         assessed_text = [quiz.get("question"), *quiz.get("options", []),
                          *quiz.get("left", []), *quiz.get("right", [])]
@@ -914,22 +920,24 @@ def validate_grounding(
         question = clean_text(quiz.get("question"))
         if "which course-note term correctly completes this statement" in question.casefold():
             raise QuizValidationError("MCQ uses a mechanical blank-completion stem.")
-        if not question.endswith("?") or not all(_mcq_option_quality(option) for option in quiz["options"]):
+        if not (question.endswith("?") or re.search(r"\?\s*(?:select|choose) all (?:correct )?(?:answers|options|statements)\.?$", question, re.I)) or not all(_mcq_option_quality(option) for option in quiz["options"]):
             raise QuizValidationError("MCQ question or options are not pedagogically usable.")
-        correct_option = quiz["options"][int(quiz["correct_index"])]
-        if not _phrase_in_notes(correct_option, context):
-            raise QuizValidationError("The MCQ correct option is not grounded in the supplied notes.")
+        try:
+            expected = correct_indices(quiz)
+        except ValueError as exc:
+            raise QuizValidationError(str(exc)) from exc
+        correct_options = [quiz["options"][index] for index in expected]
+        if not all(_phrase_in_notes(option, context) for option in correct_options):
+            raise QuizValidationError("An MCQ correct option is not grounded in the supplied notes.")
         explanation = clean_text(quiz.get("explanation"))
-        if focus and not (
-            clean_text(correct_option).casefold() in clean_text(focus.text).casefold()
-            or clean_text(focus.text).casefold() in clean_text(correct_option).casefold()
-            or jaccard(correct_option, focus.text) >= 0.28
-            or (
-                clean_text(correct_option).casefold() in explanation.casefold()
-                and jaccard(explanation, focus.text) >= 0.28
-            )
+        if focus and not any(
+            clean_text(option).casefold() in clean_text(focus.text).casefold()
+            or clean_text(focus.text).casefold() in clean_text(option).casefold()
+            or jaccard(option, focus.text) >= 0.28
+            or (clean_text(option).casefold() in explanation.casefold() and jaccard(explanation, focus.text) >= 0.28)
+            for option in correct_options
         ):
-            raise QuizValidationError("The MCQ correct option does not test the selected focus fact.")
+            raise QuizValidationError("The MCQ correct options do not test the selected focus fact.")
     elif quiz_type == "fill_blank":
         answer = clean_text(quiz.get("answer"))
         question = clean_text(quiz.get("question"))
@@ -970,13 +978,16 @@ def validate_grounding(
         }
         for left_index, term in enumerate(quiz["left"]):
             definition = quiz["right"][quiz["correct_mapping"][left_index]]
-            if not _meaningful_term(term, allow_lowercase=True):
+            if not _matching_term(term):
                 raise QuizValidationError("A Matching term is a heading or fragment.")
             supported_pair = any(
                 term.casefold() == known_term and jaccard(definition, known_definition) >= 0.45
                 for known_term, known_definition in allowed
             )
-            supported_in_chunk = _phrase_in_notes(term, context) and _phrase_in_notes(definition, context)
+            supported_in_chunk = any(
+                _phrase_in_notes(term, clean_text(chunk.get("text")))
+                and _phrase_in_notes(definition, clean_text(chunk.get("text"))) for chunk in chunks
+            )
             if not supported_pair and not supported_in_chunk:
                 raise QuizValidationError("A Matching pair is not supported by the supplied course notes.")
     elif not _phrase_in_notes(quiz["question"], context):
@@ -1208,7 +1219,7 @@ def _display_label(value: object) -> str:
     return text.strip(" .:;-")
 
 
-def _shuffle_options(options: list[str], answer: str, seed: str) -> tuple[list[str], int]:
+def _shuffle_options(options: list[str], answer: str, seed: str, minimum: int = 4) -> tuple[list[str], int]:
     distinct: list[str] = []
     for item in options:
         item = clean_text(item).strip("“”\"' ")
@@ -1217,9 +1228,9 @@ def _shuffle_options(options: list[str], answer: str, seed: str) -> tuple[list[s
     if answer.casefold() not in {item.casefold() for item in distinct}:
         distinct.insert(0, answer)
     selected = [answer] + [item for item in distinct if item.casefold() != answer.casefold()][:3]
-    if len(selected) != 4:
+    if len(selected) < minimum:
         raise QuizUnavailableError("The system could not construct four coherent MCQ options.")
-    shift = int(hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:2], 16) % 4
+    shift = int(hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:2], 16) % len(selected)
     selected = selected[shift:] + selected[:shift]
     return selected, selected.index(answer)
 
@@ -1300,9 +1311,9 @@ def _relation_mcq(focus: FocusFact, chunks: list[dict[str, Any]], topic: str) ->
         return None
 
     if detail_overlap >= 0.18:
-        question = f"Which item is listed under “{label}” in the course notes?"
+        question = f"Which function or property is associated with {label}?"
     else:
-        question = f"Which function is associated with “{label}” in the course notes?"
+        question = f"Which function is associated with {label}?"
     return {
         "type": "mcq",
         "question": question,
@@ -1378,40 +1389,41 @@ def _mcq_statement(value: object) -> bool:
 
 
 def _fact_mcq(focus: FocusFact, chunks: list[dict[str, Any]], topic: str) -> dict[str, Any]:
+    """A single subject, one supported fact and three bounded contradictions.
+
+    Unrelated true facts are not distractors: their vocabulary gives the answer
+    away, while a section-location stem tests document recall instead of knowledge.
+    """
     answer = _polish_sentence(focus.text)
-    if not _mcq_statement(answer) or not _mcq_option_quality(answer):
-        raise QuizUnavailableError("The selected notes do not contain a readable grounded MCQ answer.")
-    section = clean_text(focus.chunk.get("section")) or "the selected section"
-    candidates: list[str] = []
-    backup_candidates: list[str] = []
-    for chunk in chunks:
-        for fact in chunk.get("facts", []):
-            text = _polish_sentence(fact.get("text"))
-            if not _mcq_statement(text) or not _mcq_option_quality(text) or text.casefold() == answer.casefold():
+    subject_match = re.match(
+        r"^(.{2,70}?)\s+(?:is|are|was|were|can|has|have|requires?|provides?|uses?|consists?)\b", answer, re.I,
+    )
+    if not subject_match or not _mcq_statement(answer) or not _mcq_option_quality(answer):
+        raise QuizUnavailableError("The selected notes do not contain a clear MCQ subject and fact.")
+    subject = re.sub(r"^\d+\s+", "", subject_match.group(1)).strip()
+    subject = _matching_term(subject) or subject
+    if subject.casefold() in {"there", "it", "this", "these", "they"}:
+        subject = clean_text(topic)
+    if not subject or not _meaningful_term(subject, allow_lowercase=True):
+        raise QuizUnavailableError("The selected MCQ fact does not name a specific concept.")
+    distractors = []
+    for match in re.finditer(r"(?<![A-Za-z])\d+(?:\.\d+)?", answer):
+        raw = match.group(0)
+        step = 10 ** -len(raw.split(".")[1]) if "." in raw else 1
+        for offset in (1, -1, 2, -2):
+            number = float(raw) + offset * step
+            if number < 0:
                 continue
-            # When no topic was supplied, keep the original section isolation
-            # so a section-name question still has exactly one supported option.
-            if not topic and clean_text(chunk.get("section")).casefold() == section.casefold():
-                continue
-            if topic and _fact_matches_topic(topic, text, chunk):
-                # Topic search is intentionally broad (one shared word can be
-                # enough), so a retrieved lighting fact can still be a safe
-                # distractor for "definition of lamp". Keep low-overlap facts as
-                # backup rather than rejecting the whole MCQ.
-                if jaccard(text, answer) < 0.18:
-                    backup_candidates.append(text)
-                continue
-            candidates.append(text)
-    candidates.extend(item for item in backup_candidates if item.casefold() not in {value.casefold() for value in candidates})
-    options, correct_index = _shuffle_options([answer, *candidates], answer, focus.fact_key)
-    if topic:
-        question = f"Which statement best describes “{_display_label(topic)}” according to the course notes?"
-    else:
-        question = f"Which statement is presented in the course-note section “{_display_label(section)}”?"
-    return {
-        "type": "mcq", "question": question, "options": options,
-        "correct_index": correct_index, "explanation": answer,
-    }
+            replacement = f"{number:.{len(raw.split('.')[1])}f}" if "." in raw else str(int(number))
+            candidate = answer[:match.start()] + replacement + answer[match.end():]
+            if _bounded_false_contradiction(candidate, answer) and not _phrase_in_notes(candidate, _all_context(chunks)):
+                distractors.append(candidate)
+    candidate = _false_variant(answer, focus.fact_key)
+    if candidate and _bounded_false_contradiction(candidate, answer):
+        distractors.append(candidate)
+    options, correct_index = _shuffle_options([answer, *distractors], answer, focus.fact_key, minimum=2)
+    return {"type": "mcq", "question": f"Which statement correctly describes {subject}?",
+            "options": options, "correct_index": correct_index, "explanation": answer}
 
 
 def _polish_sentence(value: object) -> str:
@@ -1769,6 +1781,10 @@ def _alternate_fill_blank_focus(
 def _matching_term(value: object) -> str:
     """A displayed term must be ONE named concept, not an outline or list."""
     term = clean_text(value).strip("•–-,:;. ")
+    if not re.search(r"[A-Za-z]", term) or re.search(
+        r"^(?:since then|from then|later|next|previously|wikipedia definition|definition|overview|introduction|summary|example|history|evolution)(?:\b|$)", term, re.I,
+    ):
+        return ""
     term = re.sub(r"^In building services,\s+(?:the|a|an)\s+", "", term, flags=re.I)
     term = re.sub(r"^(?:a|an|the)\s+", "", term, flags=re.I)
     if re.search(r"[,;]", term) or re.search(r"\s+and\s+", term, flags=re.I):
@@ -1797,7 +1813,7 @@ def _matching_neighborhood_pairs(
         if focus.chunk.get("page") and chunk.get("page") and abs(int(chunk["page"]) - int(focus.chunk["page"])) > 5:
             continue
         body = clean_text(chunk.get("text"))
-        category = clean_text(chunk.get("chapter")) or clean_text(topic) or "Course-note concepts"
+        category = clean_text(chunk.get("section")) or clean_text(topic) or "Course-note concepts"
         # A) Exact definitions ("A loss function states ...", "The rule combines ...").
         for fact in chunk.get("facts") or []:
             sentence = clean_text(fact.get("text")).rstrip(" .") + "."
@@ -1955,15 +1971,23 @@ def local_quiz(
             if len({entry[1]["term"].casefold() for entry in same_page}) >= 3:
                 ranked = same_page
         ranked.sort(key=lambda x:x[0], reverse=True)
-        chosen: list[dict[str, Any]] = []
-        for _score, item in ranked:
-            if any(jaccard(item["definition"], old["definition"]) >= 0.78 for old in chosen):
-                continue
-            chosen.append(item)
-            if len(chosen) >= 4:
-                break
-        if len(chosen) < 3:
-            raise QuizUnavailableError("The selected notes do not contain three distinct, supported term-definition pairs for this topic.")
+        groups: dict[str, list[tuple[float, dict[str, Any]]]] = {}
+        for score, item in ranked:
+            category = clean_text(item.get("category")).casefold()
+            groups.setdefault(category, []).append((score, item))
+        coherent = []
+        for group in groups.values():
+            selected = []
+            for score, item in group:
+                if any(jaccard(item["definition"], old[1]["definition"]) >= 0.65 for old in selected):
+                    continue
+                selected.append((score, item))
+            if len(selected) >= 2:
+                coherent.append(selected[:4])
+        if not coherent:
+            raise QuizUnavailableError("The selected notes do not contain two distinct pairs in one coherent category.")
+        best = max(coherent, key=lambda group: (min(3, len(group)), sum(score for score, _ in group)))
+        chosen = [item for _score, item in best]
         raw = {"type": "matching", "question": "Match each course-note term with its supported definition.",
                "pairs": [[item["term"], item["definition"]] for item in chosen]}
         quiz = normalize_quiz(raw, "matching", focus.fact_key)
@@ -1992,7 +2016,7 @@ def generation_prompt(
     tf_index = 0 if true_false_correct_index not in {0, 1} else int(true_false_correct_index)
     schemas = {
         "true_false": f'{{"type":"true_false","question":"...","options":["True","False"],"correct_index":{tf_index},"explanation":"..."}}',
-        "mcq": '{"type":"mcq","question":"...","options":["...","...","...","..."],"correct_index":0,"explanation":"..."}',
+        "mcq": '{"type":"mcq","question":"...","options":["...","...","...","..."],"correct_indices":[0],"explanation":"..."}',
         "matching": '{"type":"matching","question":"...","pairs":[{"term":"...","definition":"..."},{"term":"...","definition":"..."},{"term":"...","definition":"..."}],"explanation":"..."}',
         "fill_blank": '{"type":"fill_blank","question":"... _____ ...","answer":"one to three words","explanation":"..."}',
         "short_answer": '{"type":"short_answer","question":"...","key_points":["..."],"reference":"complete grounded answer covering every key point","explanation":"complete note-based explanation covering every key point"}',
@@ -2017,13 +2041,13 @@ def generation_prompt(
     )
     type_rules = {
         "mcq": (
-            "Write a self-contained single-best-answer question that assesses the focus concept. "
+            "Write a self-contained question that assesses the focus concept. Use correct_indices with one or more zero-based correct choices; for multiple correct choices, explicitly say Select all correct answers. "
             "Choose a direct definition, function comparison, or brief application scenario as appropriate to the evidence. "
             "Use a scenario only when the references support the inference. "
             "A learner must be able to answer without knowing the chapter title or which slide a sentence appears on. "
             "Do not turn a sentence into a blank and do not use the stem 'Which course-note term correctly completes this statement?'. "
             "All four options must be meaningful and parallel in grammatical form. Never use headings, labels, isolated generic words, "
-            "questions, or fragments such as 'Class discussions: What' or 'Use'. Exactly one option must answer the question. "
+            "questions, or fragments such as 'Class discussions: What' or 'Use'. Every index in correct_indices must answer the question; every other option must be clearly incorrect for that same subject. "
             "If the source contains damaged equation text, use a concise plain-English relationship directly supported by the "
             "readable references; never copy broken mathematical notation or guess missing symbols. "
             "Do not include an option that is incomplete, an outline title, or longer than 55 words."
@@ -2078,7 +2102,7 @@ def generation_prompt(
 {authoring}
 REQUIRED OUTPUT SCHEMA: {schemas[quiz_type]}
 Use the references and allowed term pairs as the source of truth for the question, correct answer, explanation, and citations.
-For MCQ only, the three incorrect distractors may be AI-generated and do not need to appear in the references, but they must be plausible, clearly incorrect, parallel in form, and must not create a second defensible correct answer.
+For MCQ only, incorrect distractors may be AI-generated and do not need to appear in the references, but they must be plausible, clearly incorrect, parallel in form, and must not create an unlisted defensible correct answer.
 The question must test the FOCUS FACT and remain relevant to STUDENT TOPIC.
 FOCUS FACT: {focus.text}
 STUDENT TOPIC: {topic or '(chapter-wide)'}
@@ -2172,13 +2196,33 @@ def generate_quiz(
                 true_false_correct_index=true_false_correct_index,
             )
         except QuizUnavailableError:
-            if quiz_type != "fill_blank":
+            if quiz_type == "mcq":
+                alternatives = []
+                for chunk in chunks:
+                    for fact in chunk.get("facts") or []:
+                        text = clean_text(fact.get("text"))
+                        key = str(fact.get("fact_key") or f"F-{fingerprint(text)}")
+                        if key != focus.fact_key and _usable_fact(text) and _fact_matches_topic(topic, text, chunk):
+                            alternatives.append(FocusFact(text, key, chunk))
+                alternatives.sort(key=lambda item: item.fact_key in _used(history, "facts"))
+                for alternate in alternatives:
+                    try:
+                        quiz, citations = local_quiz("mcq", alternate, chunks, terms, topic)
+                        validate_grounding(quiz, chunks, terms, alternate)
+                        focus = alternate
+                        break
+                    except (QuizUnavailableError, QuizValidationError):
+                        continue
+                else:
+                    raise QuizUnavailableError("No fact supports coherent MCQ choices.")
+            elif quiz_type != "fill_blank":
                 raise
             # The current unused fact may be valid for another question type
             # but contain no concise blankable term. Search the remaining
             # retrieved facts before reporting a learner-facing failure.
-            focus = _alternate_fill_blank_focus(focus, chunks, terms, history, topic)
-            quiz, citations = local_quiz(quiz_type, focus, chunks, terms, topic)
+            if quiz_type == "fill_blank":
+                focus = _alternate_fill_blank_focus(focus, chunks, terms, history, topic)
+                quiz, citations = local_quiz(quiz_type, focus, chunks, terms, topic)
         validate_grounding(quiz, chunks, terms, focus)
     question_key = f"Q-{fingerprint(quiz.get('question'))}"
     return GeneratedQuiz(quiz, source, focus, citations, question_key, bool(search_result.get("coverage_exhausted")))

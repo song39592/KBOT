@@ -31,6 +31,7 @@
         {% endif %}
         {% if 'notes' in config.ENABLED_STUDENT_MODULES %}
         <a class="header-link" href="{{ url_for('notes.notes_page') }}">Notes QA</a>
+        <a class="header-link" href="{{ url_for('notes.notes_history') }}">Notes history & saved</a>
         {% endif %}
         {% if 'history' in config.ENABLED_STUDENT_MODULES %}
           {% if history_page_active %}
@@ -69,7 +70,7 @@
   };
 })();
 </script>
-  <script src="{{ url_for('static', filename='app.js') }}?v=8.0.13-objective-1"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v=8.0.13-multi-answer-2"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>
