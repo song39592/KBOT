@@ -29,3 +29,6 @@ logs/
 # Deployment archives
 *.zip
 *.ova
+
+.notes-venv/
+!.env.deepseek.example

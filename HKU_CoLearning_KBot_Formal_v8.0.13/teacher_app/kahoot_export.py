@@ -169,6 +169,10 @@ def eligible_questions(records: Iterable[Any]) -> list[dict[str, Any]]:
         kind = _type_key(getattr(record, "question_type", ""))
         if kind not in MCQ_TYPE_KEYS and kind not in TRUE_FALSE_TYPE_KEYS:
             continue
+        stored = _decode(getattr(record, "options_or_pairs", ""))
+        if isinstance(stored, dict) and len(stored.get("correct_indices") or []) > 1:
+            # The current Kahoot export contract supports one correct answer.
+            continue
         stem = _safe_text(getattr(record, "question", ""), 120)
         if not stem:
             continue

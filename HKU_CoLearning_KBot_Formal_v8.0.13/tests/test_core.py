@@ -1038,7 +1038,7 @@ class RelaxedKnowledgeRuleTests(unittest.TestCase):
         with self.assertRaises(QuizValidationError):
             validate_grounding(quiz, [chunk], [], focus)
 
-    def test_narrow_topic_local_mcq_can_use_broader_retrieved_facts_as_distractors(self):
+    def test_narrow_topic_local_mcq_uses_bounded_distractors_instead_of_unrelated_facts(self):
         correct = "In building services, the lamp is the electrical component that produces light."
         focus_chunk = {
             "text": correct,
@@ -1063,9 +1063,11 @@ class RelaxedKnowledgeRuleTests(unittest.TestCase):
         quiz, _citations = local_quiz(
             "mcq", focus, [focus_chunk, *other_chunks], [], "definition of lamp"
         )
-        self.assertEqual(len(quiz["options"]), 4)
+        self.assertEqual(len(quiz["options"]), 2)
         self.assertIn(correct, quiz["options"])
-        self.assertIn("definition of lamp", quiz["question"].casefold())
+        self.assertIn("lamp", quiz["question"].casefold())
+        self.assertNotIn("course-note section", quiz["question"])
+        self.assertTrue(all("lamp" in option for option in quiz["options"]))
         validate_grounding(quiz, [focus_chunk, *other_chunks], [], focus)
 
     def test_notes_agent_may_answer_with_general_knowledge_without_citations(self):
@@ -1078,15 +1080,23 @@ class RelaxedKnowledgeRuleTests(unittest.TestCase):
         self.assertEqual(normalized["used_reference_ids"], [])
         self.assertFalse(normalized["insufficient_information"])
 
+        # Live answers now require explicitly labelled sections. Legacy records
+        # remain readable through normalize_notes, but cannot imply course support.
+        structured = json.dumps({"sections": [{
+            "kind": "outside_course", "text": "A concise general-knowledge explanation.",
+            "reference_ids": [],
+        }], "evidence_status": "unsupported"})
         result = answer_notes(
-            "Explain this concept.",
-            [],
-            StaticRouter(AgentKind.NOTES, raw),
-            "student",
+            "Explain packet switching.", [],
+            StaticRouter(AgentKind.NOTES, structured), "student",
         )
         self.assertEqual(result["answering_source"], "coze_notes_agent")
         self.assertEqual(result["citations"], [])
-        self.assertEqual(result["answer"], "A concise general-knowledge explanation.")
+        self.assertEqual(result["evidence_status"], "unsupported")
+        self.assertEqual(result["sections"][0]["kind"], "outside_course")
+        self.assertIn("A concise general-knowledge explanation.", result["answer"])
+        legacy = answer_notes("Explain packet switching.", [], StaticRouter(AgentKind.NOTES, raw), "student")
+        self.assertEqual(legacy["answering_source"], "local_fallback")
 
 
 class V3KnowledgeRuleRegressionTests(unittest.TestCase):
