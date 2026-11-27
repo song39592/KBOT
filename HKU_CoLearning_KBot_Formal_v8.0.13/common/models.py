@@ -111,6 +111,14 @@ class TeacherQuestionBankItem(db.Model):
 
 class NotesQARecord(db.Model):
     __tablename__ = "notes_qa_records"
+    # The v6.2 MySQL initializer created this table with
+    # utf8mb4_unicode_ci. Keep that collation explicit so foreign-key tables
+    # created later remain compatible even when the database default is the
+    # MySQL 8 default (utf8mb4_0900_ai_ci).
+    __table_args__ = {
+        "mysql_charset": "utf8mb4",
+        "mysql_collate": "utf8mb4_unicode_ci",
+    }
 
     id = db.Column(db.String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     student_name = db.Column(db.String(128), nullable=False, index=True)
@@ -173,6 +181,10 @@ class BankQuestionDetails(db.Model):
 
 class NotesDetail(db.Model):
     __tablename__ = "notes_details"
+    __table_args__ = {
+        "mysql_charset": "utf8mb4",
+        "mysql_collate": "utf8mb4_unicode_ci",
+    }
     record_id = db.Column(db.String(64), db.ForeignKey("notes_qa_records.id"), primary_key=True)
     topic = db.Column(db.String(120), nullable=False, index=True)
     sections_json = db.Column(db.Text, nullable=False, default="[]")
@@ -180,6 +192,10 @@ class NotesDetail(db.Model):
 
 class NotesFeedback(db.Model):
     __tablename__ = "notes_feedback"
+    __table_args__ = {
+        "mysql_charset": "utf8mb4",
+        "mysql_collate": "utf8mb4_unicode_ci",
+    }
     id = db.Column(db.String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     record_id = db.Column(db.String(64), db.ForeignKey("notes_qa_records.id"), nullable=False, unique=True)
     student_name = db.Column(db.String(128), nullable=False)
@@ -192,6 +208,10 @@ class NotesFeedback(db.Model):
 
 class NotesCorrection(db.Model):
     __tablename__ = "notes_corrections"
+    __table_args__ = {
+        "mysql_charset": "utf8mb4",
+        "mysql_collate": "utf8mb4_unicode_ci",
+    }
     id = db.Column(db.String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     record_id = db.Column(db.String(64), db.ForeignKey("notes_qa_records.id"), nullable=False, index=True)
     teacher_name = db.Column(db.String(128), nullable=False)
@@ -200,5 +220,9 @@ class NotesCorrection(db.Model):
 
 class NotesBookmark(db.Model):
     __tablename__ = "notes_bookmarks"
+    __table_args__ = {
+        "mysql_charset": "utf8mb4",
+        "mysql_collate": "utf8mb4_unicode_ci",
+    }
     record_id = db.Column(db.String(64), db.ForeignKey("notes_qa_records.id"), primary_key=True)
     student_name = db.Column(db.String(128), nullable=False)

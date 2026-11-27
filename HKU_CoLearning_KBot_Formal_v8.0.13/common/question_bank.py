@@ -13,6 +13,9 @@ import hashlib
 import io
 import json
 import random
+import re
+import unicodedata
+from difflib import SequenceMatcher
 import uuid
 import zipfile
 from typing import Any
@@ -22,6 +25,7 @@ from common.question_bank_extended import QUESTION_HEADERS, parse_extended
 from sqlalchemy import or_
 
 from common.models import BankQuestion, TeacherQuestionBankItem, db
+from common.mcq_answers import answer_letters, correct_indices
 
 
 HEADERS = [
@@ -32,7 +36,7 @@ HEADERS = [
 MAX_FILE_BYTES = 5 * 1024 * 1024
 
 VALID_TYPES = {"true_false", "mcq", "matching", "fill_blank", "short_answer"}
-STUDENT_TO_BANK_TYPE = {"true_false": "TF", "mcq": "MCQ"}
+STUDENT_TO_BANK_TYPE = {"true_false": "TF", "mcq": "MCQ", "matching": "MATCHING"}
 BANK_TO_STUDENT_TYPE = {"TF": "true_false", "MCQ": "mcq"}
 
 
@@ -95,8 +99,10 @@ def parse_workbook(content):
             elif kind == "MCQ":
                 if len(options) < 2:
                     issues.append("MCQ requires at least two options.")
-                if answer not in options:
-                    issues.append("MCQ answer must be one existing option letter A–E.")
+                try:
+                    answer = "".join(answer_letters(answer, options))
+                except ValueError as exc:
+                    issues.append(str(exc))
                 if len({v.casefold() for v in options.values()}) != len(options):
                     issues.append("Duplicate option text is not accepted.")
             else:
@@ -157,19 +163,50 @@ def quiz_from_bank_question(row: BankQuestion) -> dict[str, Any] | None:
             "correct_index": 0 if answer == "TRUE" else 1,
             "explanation": explanation,
         }
+    if kind in {"MATCH", "MATCHING"}:
+        details = row.details.data if row.details else {}
+        pairs = details.get("pairs", []) if isinstance(details, dict) else []
+        mapping = details.get("correct_pairs", {}) if isinstance(details, dict) else {}
+        if not isinstance(pairs, list) or not 2 <= len(pairs) <= 20 or not isinstance(mapping, dict):
+            return None
+        if not all(isinstance(pair, dict) and all(pair.get(key) for key in
+                   ("left_id", "left_text", "right_id", "right_text")) for pair in pairs):
+            return None
+        if not all(isinstance(pair[key], str) for pair in pairs for key in
+                   ("left_id", "left_text", "right_id", "right_text")) or not all(
+                       isinstance(value, str) for value in mapping.values()):
+            return None
+        left_ids = [pair["left_id"] for pair in pairs]
+        right_ids = [pair["right_id"] for pair in pairs]
+        if (len(set(left_ids)) != len(pairs) or len(set(right_ids)) != len(pairs)
+                or set(mapping) != set(left_ids) or set(mapping.values()) != set(right_ids)):
+            return None
+        shuffled = list(pairs)
+        random.Random(str(row.id)).shuffle(shuffled)
+        positions = {pair["right_id"]: index for index, pair in enumerate(shuffled)}
+        return {
+            "type": "matching", "question": question,
+            "left": [pair["left_text"] for pair in pairs],
+            "right": [pair["right_text"] for pair in shuffled],
+            "correct_mapping": [positions[mapping[key]] for key in left_ids],
+            "explanation": explanation,
+        }
     if kind == "MCQ":
         raw_options = row.options if isinstance(row.options, dict) else {}
         letters = [letter for letter in "ABCDE" if str(raw_options.get(letter) or "").strip()]
         if len(letters) < 2:
             return None
         answer = str(row.correct_answer or "").strip().upper()
-        if answer not in letters:
+        try:
+            answers = answer_letters(answer, letters)
+        except ValueError:
             return None
+        key = {"correct_index": letters.index(answers[0])} if len(answers) == 1 else {"correct_indices": [letters.index(value) for value in answers]}
         return {
             "type": "mcq",
             "question": question,
             "options": [str(raw_options[letter]).strip() for letter in letters],
-            "correct_index": letters.index(answer),
+            **key,
             "explanation": explanation,
         }
     return None
@@ -188,14 +225,29 @@ def quiz_payload_from_item(item: TeacherQuestionBankItem) -> dict[str, Any] | No
         "question": question,
         "explanation": str(item.explanation or ""),
     }
-    for key in ("options", "correct_index", "left", "right", "correct_mapping", "answer", "reference", "key_points"):
+    for key in ("options", "correct_index", "correct_indices", "left", "right", "correct_mapping", "answer", "reference", "key_points"):
         if key in payload:
             quiz[key] = payload[key]
     quiz_type = quiz["type"]
     if quiz_type in {"true_false", "mcq"} and not quiz.get("options"):
         return None
-    if quiz_type == "matching" and (not quiz.get("left") or not quiz.get("right")):
-        return None
+    if quiz_type in {"mcq", "true_false"}:
+        try:
+            correct_indices(quiz)
+        except ValueError:
+            return None
+    if quiz_type == "matching":
+        left, right, mapping = quiz.get("left"), quiz.get("right"), quiz.get("correct_mapping")
+        if not all(isinstance(value, list) for value in (left, right, mapping)):
+            return None
+        if not (2 <= len(left) == len(right) == len(mapping) <= 20):
+            return None
+        if not all(isinstance(value, str) and value.strip() for value in left + right):
+            return None
+        if len({value.casefold() for value in left}) != len(left) or len({value.casefold() for value in right}) != len(right):
+            return None
+        if not all(type(value) is int for value in mapping) or set(mapping) != set(range(len(right))):
+            return None
     if quiz_type == "fill_blank" and "answer" not in quiz:
         return None
     if quiz_type == "short_answer" and not (quiz.get("reference") or quiz.get("answer")):
@@ -263,6 +315,28 @@ def _hit_from_legacy_item(item: TeacherQuestionBankItem, quiz_type: str) -> dict
     }
 
 
+def _topic_key(value: object) -> str:
+    # NFKC also makes full-width user input comparable to ordinary text.
+    return "".join(char for char in unicodedata.normalize("NFKC", str(value or "")).casefold()
+                   if char.isalnum())
+
+
+def _topic_rank(topic: str, hit: dict[str, Any]) -> tuple[int, float]:
+    requested = unicodedata.normalize("NFKC", topic).strip().casefold()
+    stored = unicodedata.normalize("NFKC", hit["topic"]).strip().casefold()
+    if requested == stored:
+        return 3, 1.0
+    key, stored_key = _topic_key(requested), _topic_key(stored)
+    if key and key == stored_key:
+        return 2, 1.0
+    # Always return the nearest eligible item, even if the topic is unfamiliar.
+    # Question text helps rank banks whose optional topic column is blank.
+    words = set(re.findall(r"\w+", requested))
+    text = str(hit["quiz"].get("question") or "").casefold()
+    overlap = len(words & set(re.findall(r"\w+", text))) / max(1, len(words))
+    return 1, max(SequenceMatcher(None, key, stored_key).ratio(), overlap * 0.8)
+
+
 def pick_question(
     chapter_id: str,
     quiz_type: str,
@@ -270,66 +344,42 @@ def pick_question(
     used_fingerprints: list[Any] | None = None,
     chapter_label: str = "",
 ) -> dict[str, Any] | None:
-    """Prefer a teacher-bank question before AI generation.
+    """Rank unused same-chapter/type items: exact, normalized, then nearest.
 
-    Order: Excel-uploaded ``BankQuestion`` rows, then reserved JSON bank items.
+    Excel uploads win ties against reserved JSON items. An empty topic samples
+    the eligible chapter pool. Exhausted/empty pools permit normal generation.
     """
     chapter_id = str(chapter_id or "").strip()
     quiz_type = str(quiz_type or "").strip()
     if not chapter_id or quiz_type not in VALID_TYPES:
         return None
-
     used = {str(item) for item in (used_fingerprints or []) if item}
-    topic_norm = str(topic or "").strip().lower()
+    topic = str(topic or "").strip()
     hits: list[dict[str, Any]] = []
-
     bank_type = STUDENT_TO_BANK_TYPE.get(quiz_type)
     if bank_type:
         course_keys = _course_keys(chapter_id, chapter_label)
-        query = BankQuestion.query.filter_by(question_type=bank_type)
-        if course_keys:
-            query = query.filter(or_(*[BankQuestion.course == key for key in course_keys]))
-        else:
-            query = query.filter(False)
-        rows = query.order_by(BankQuestion.created_at.desc()).limit(200).all()
+        rows = (BankQuestion.query.filter(BankQuestion.question_type.in_([bank_type, "MATCH"] if quiz_type == "matching" else [bank_type]))
+                .filter(or_(*[BankQuestion.course == key for key in course_keys]))
+                .order_by(BankQuestion.created_at.desc(), BankQuestion.id).all())
         for row in rows:
             hit = _hit_from_bank_question(row, quiz_type)
-            if hit is None:
-                continue
-            if hit["fingerprint"] in used:
-                continue
-            row_topic = str(row.topic or "").strip().lower()
-            if topic_norm and row_topic != topic_norm:
-                continue
+            if hit and hit["fingerprint"] not in used:
+                hits.append(hit)
+    legacy_rows = (TeacherQuestionBankItem.query.filter_by(
+        chapter_id=chapter_id, question_type=quiz_type, is_active=True)
+        .order_by(TeacherQuestionBankItem.created_at.desc(), TeacherQuestionBankItem.id).all())
+    for row in legacy_rows:
+        hit = _hit_from_legacy_item(row, quiz_type)
+        if hit and hit["fingerprint"] not in used:
             hits.append(hit)
-
-    if not hits:
-        legacy_rows = (
-            TeacherQuestionBankItem.query.filter_by(
-                chapter_id=chapter_id,
-                question_type=quiz_type,
-                is_active=True,
-            )
-            .order_by(TeacherQuestionBankItem.created_at.desc())
-            .limit(200)
-            .all()
-        )
-        for row in legacy_rows:
-            hit = _hit_from_legacy_item(row, quiz_type)
-            if hit is None:
-                continue
-            if hit["fingerprint"] in used:
-                continue
-            row_topic = str(row.topic or "").strip().lower()
-            if topic_norm and row_topic != topic_norm:
-                continue
-            hits.append(hit)
-
     if not hits:
         return None
-    if topic_norm:
-        return hits[0]
-    return random.choice(hits)
+    chosen = max(hits, key=lambda hit: _topic_rank(topic, hit)) if _topic_key(topic) else random.choice(hits)
+    chosen["matched_topic"] = chosen["topic"]
+    chosen["topic_match"] = ("chapter" if not _topic_key(topic) else
+                             {3: "exact", 2: "normalized", 1: "nearest"}[_topic_rank(topic, chosen)[0]])
+    return chosen
 
 
 def _fingerprint_for(row: dict[str, Any]) -> str:

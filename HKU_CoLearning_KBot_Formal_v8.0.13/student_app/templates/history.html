@@ -44,6 +44,20 @@
       </div>
       {% endif %}
       <p><b>{{ r.correct_label }}:</b> {{ r.correct_answer }}</p>
+      <p><b>Source:</b> {{ r.source_label }}</p>
+      {% if r.feedback %}<p><b>Feedback:</b> {{ r.feedback }}</p>{% endif %}
+      {% if r.explanation and r.explanation not in r.feedback %}<p><b>Explanation:</b> {{ r.explanation }}</p>{% endif %}
+      {% if r.pair_feedback %}<ul>{% for pair in r.pair_feedback %}<li><b>{{ pair.term }}</b>: {{ pair.reasoning }}</li>{% endfor %}</ul>{% endif %}
+      {% if r.key_point_results %}<ul>{% for point in r.key_point_results %}<li>Point {{ point.index }}: {{ point.credit }}/100 · {{ point.comment }}</li>{% endfor %}</ul>{% endif %}
+      {% if r.citations %}
+      <details><summary>Course-note references ({{ r.citations|length }})</summary>
+        {% for reference in r.citations %}<div class="citation-card">
+          <strong>{{ reference.source_file or 'Course material' }}{% if reference.page is not none %} · page {{ reference.page }}{% endif %}</strong>
+          {% if reference.section %}<p>{{ reference.section }}</p>{% endif %}
+          <p>{{ reference.excerpt }}</p>
+        </div>{% endfor %}
+      </details>
+      {% endif %}
       {% if r.teacher_feedback %}
       <p class="teacher-feedback"><b>Teacher feedback:</b> {{ r.teacher_feedback }}</p>
       {% endif %}
