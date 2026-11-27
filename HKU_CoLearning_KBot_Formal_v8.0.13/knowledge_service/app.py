@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import hmac
 
-from flask import Flask, jsonify, request
+from flask import send_file, abort, Flask, jsonify, request
 from werkzeug.utils import secure_filename
 
 from common.config import apply_overrides, env, env_bool, env_float, env_int, resolve_path
@@ -121,6 +121,29 @@ def create_app(overrides: dict | None = None) -> Flask:
             return jsonify({"ok": False, "error": "chapter_id is required."}), 400
         items = repository.matching_candidates(str(data.get("query") or ""), chapter_id, data.get("limit") or 12)
         return jsonify({"ok": True, "candidates": items, "count": len(items)})
+
+    @app.get("/api/documents/<document_id>/pages")
+    def read_pages(document_id):
+        if not authorized(False):
+            return deny()
+        try:
+            repository.get_document(document_id)
+        except KeyError:
+            abort(404)
+        return jsonify(ok=True, pages=repository.pages(document_id))
+
+    @app.get("/api/documents/<document_id>/file")
+    def read_file(document_id):
+        if not authorized(False):
+            return deny()
+        try:
+            doc = repository.get_document(document_id)
+        except KeyError:
+            abort(404)
+        path = (repository.upload_dir / doc["stored_path"]).resolve()
+        if not path.is_relative_to(repository.upload_dir.resolve()) or not path.is_file():
+            abort(404)
+        return send_file(path, download_name=doc["filename"], as_attachment=path.suffix.lower() != ".pdf")
 
     @app.get("/api/admin/documents")
     def documents():

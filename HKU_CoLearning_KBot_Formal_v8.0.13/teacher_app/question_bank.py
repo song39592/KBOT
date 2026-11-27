@@ -2,11 +2,13 @@
 import hashlib
 import io
 import secrets
+import re
 from functools import wraps
 from flask import Blueprint, abort, current_app, jsonify, render_template, request, send_file, session, url_for
 from flask_login import current_user, login_required
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from openpyxl import Workbook
+from openpyxl.comments import Comment
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from common.knowledge_client import KnowledgeClient, KnowledgeServiceError
 from common.models import BankQuestion, BankQuestionDetails, db
@@ -56,6 +58,40 @@ def available_chapters():
     return {str(c["id"]): c for c in client.chapters() if c.get("id")}
 
 
+def explanation_warnings(question):
+    """A review hint, not a semantic correctness claim or an import blocker."""
+    get = question.get if isinstance(question, dict) else lambda key, default="": getattr(question, key, default)
+    explanation = str(get("explanation") or "").strip()
+    if not explanation:
+        return ["No explanation supplied. Add a reason that supports the correct answer."]
+    stop = {"the", "and", "are", "one", "which", "what", "does", "this", "that", "for", "with", "only", "from", "main", "chapter", "page"}
+    words = lambda text: {word for word in re.findall(r"[a-z]{3,}", text.lower()) if word not in stop}
+    question_terms = words(str(get("question") or ""))
+    options = get("options", {})
+    if isinstance(options, dict):
+        question_terms.update(words(" ".join(str(options.get(letter, "")) for letter in str(get("correct_answer") or "") if letter in "ABCDE")))
+    if question_terms and not question_terms & words(explanation):
+        return ["Explanation may not address this question. Review its relevance and source before use."]
+    return []
+
+
+@bp.post("/<question_id>/explanation")
+@teacher
+def update_explanation(question_id):
+    row = BankQuestion.query.filter_by(id=question_id, owner_id=current_user.id).first_or_404()
+    explanation = request.form.get("explanation", "").strip()
+    if not explanation or len(explanation) > 10000:
+        return jsonify(error="Provide an explanation of 1–10000 characters."), 400
+    row.explanation = explanation
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        return jsonify(error="Could not save the explanation. Please retry."), 500
+    from flask import redirect
+    return redirect(url_for("question_bank.index", course=row.course), code=303)
+
+
 def read_upload():
     # The exercise setup control posts chapter_id. Keep course for older clients.
     chapter_id = request.form.get("chapter_id")
@@ -103,7 +139,7 @@ def index():
     if not chapters and not chapter_error:
         chapter_error = "Upload course notes from the dashboard before importing questions."
     pagination = query.order_by(BankQuestion.created_at.desc(), BankQuestion.id).paginate(page=page, per_page=25, error_out=False)
-    return render_template("question_bank.html", pagination=pagination, courses=courses, course=course, csrf=session["bank_csrf"], chapters=chapters, chapter_error=chapter_error)
+    return render_template("question_bank.html", pagination=pagination, courses=courses, course=course, csrf=session["bank_csrf"], chapters=chapters, chapter_error=chapter_error, question_warnings=explanation_warnings)
 
 
 @bp.get("/template")
@@ -115,10 +151,16 @@ def template():
     sheet.append(HEADERS)
     sheet.append(["TF001", "TF", "HTTP", "HTTP is stateless.", "", "", "", "", "", "TRUE", "HTTP itself does not retain session state."])
     sheet.append(["MCQ001", "MCQ", "DNS", "Which protocol resolves domain names?", "HTTP", "DNS", "SMTP", "FTP", "", "B", "DNS resolves domain names."])
+    sheet["J1"].comment = Comment("MCQ: enter one letter (B) or multiple letters separated by commas (A,C). Select all correct choices; no partial credit. TF: TRUE or FALSE.", "KBot")
     sheet.freeze_panes = "A2"
     kind = request.args.get("type", "OBJECTIVE").upper()
     if kind not in ("OBJECTIVE", "MATCHING", "FILL", "SHORT"):
         return jsonify(error="Template type must be OBJECTIVE, MATCHING, FILL or SHORT."), 400
+    if kind == "OBJECTIVE":
+        examples = book.create_sheet("Multi-answer example")
+        examples.append(HEADERS)
+        examples.append(["MCQ_MULTI001", "MCQ", "Web protocols", "Which protocols are used for web content transfer? Select all correct answers.", "HTTP", "SMTP", "HTTPS", "DNS", "", "A,C", "HTTP and HTTPS transfer web content; SMTP sends email and DNS resolves names."])
+        examples["J1"].comment = Comment("Copy this row to Questions to import it. Example sheets are not imported.", "KBot")
     if kind != "OBJECTIVE":
         book.remove(sheet)
         sheet = book.create_sheet("Questions")
@@ -170,7 +212,7 @@ def preview():
         nonce = secrets.token_hex(16)
         session["bank_preview_nonce"] = nonce
         token = signer().dumps(dict(owner=current_user.id, course=course, digest=hashlib.sha256(content).hexdigest(), nonce=nonce))
-    return render_template("question_bank_preview.html", course=course, course_label=course_label, questions=questions, errors=errors, token=token)
+    return render_template("question_bank_preview.html", course=course, course_label=course_label, questions=questions, errors=errors, token=token, question_warnings=explanation_warnings)
 
 
 @bp.post("/confirm")

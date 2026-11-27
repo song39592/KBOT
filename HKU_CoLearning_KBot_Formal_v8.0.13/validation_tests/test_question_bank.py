@@ -55,7 +55,7 @@ def test_template_roundtrip(client):
     assert questions[1]['correct_answer']=='B'
 
 
-@pytest.mark.parametrize('field,value,message',[(9,'A,B','existing option'),(5,'HTTP','Duplicate option'),(1,'Matching','TF or MCQ'),(3,'','required')])
+@pytest.mark.parametrize('field,value,message',[(9,'A,F','existing option'),(5,'HTTP','Duplicate option'),(1,'Matching','TF or MCQ'),(3,'','required')])
 def test_row_errors(field,value,message):
     bad=MCQ.copy();bad[field]=value
     questions,errors=parse_workbook(workbook([TF,bad]))

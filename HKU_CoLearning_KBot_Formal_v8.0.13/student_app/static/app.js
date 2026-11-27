@@ -81,7 +81,7 @@ function renderCitations(targetSelector, citations) {
     const source = reference.source_file || "Course material";
     const section = reference.section || reference.chapter || "Section";
     const page = reference.page === undefined || reference.page === null ? "n/a" : reference.page;
-    card.append(makeNode("strong", `${source} · ${section} · page ${page}`));
+    card.append(makeNode("strong", `${reference.reference_id ? "["+reference.reference_id+"] " : ""}${source} · ${section} · page ${page}`));
     card.append(makeNode("p", reference.excerpt || ""));
     target.append(card);
   });
@@ -91,14 +91,16 @@ function answerControl(quiz) {
   const form = makeNode("form", undefined, "answer-form");
   form.id = "answer-form";
   if (quiz.type === "true_false" || quiz.type === "mcq") {
+    const multiple = quiz.type === "mcq" && quiz.multiple_answers;
+    form.append(makeNode("p", multiple ? "Select all correct answers. Full credit requires all correct choices and no extra choices." : "Choose one answer.", "answer-instructions"));
     const grid = makeNode("div", undefined, "choice-grid");
     (quiz.options || []).forEach((option, index) => {
       const label = makeNode("label", undefined, "choice-btn");
       const input = document.createElement("input");
-      input.type = "radio";
+      input.type = multiple ? "checkbox" : "radio";
       input.name = "answer";
       input.value = String(index);
-      input.required = true;
+      input.required = !multiple;
       const marker = makeNode("span", String.fromCharCode(65 + index), "choice-marker");
       const text = makeNode("span", option, "choice-text");
       label.append(input, marker, text);
@@ -139,6 +141,7 @@ function answerControl(quiz) {
 
 function readStudentAnswer(form, quiz) {
   const values = new FormData(form);
+  if (quiz.type === "mcq" && quiz.multiple_answers) return values.getAll("answer").map(Number);
   if (quiz.type === "matching") {
     return (quiz.left || []).map((_term, index) => {
       const value = values.get(`match_${index}`);
@@ -221,7 +224,7 @@ function resultCard(result) {
     row.append(makeNode("strong", "Reference answer: "), document.createTextNode(formatReferenceAnswer(result.correct_answer)));
     card.append(row);
   }
-  if (result.explanation) {
+  if (result.explanation && !(result.feedback || "").includes(result.explanation)) {
     const row = makeNode("p", undefined, "feedback-explanation");
     row.append(makeNode("strong", "Explanation: "), document.createTextNode(result.explanation));
     card.append(row);
@@ -314,14 +317,20 @@ function setupExercise(quizType, autoGenerate = false, fixedTopic = "") {
       const form = answerControl(quiz);
       target.append(form);
       // References and answer keys remain hidden until after submission.
-      status.textContent = data.diversity_notice || "";
-      status.className = data.diversity_notice ? "status-message" : "status-message hidden";
+      const notice = [data.fallback_notice, data.match_notice, data.diversity_notice].filter(Boolean).join(" ");
+      status.textContent = notice;
+      status.className = notice ? "status-message" : "status-message hidden";
 
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         if (working) return;
         const submit = form.querySelector('button[type="submit"]');
         const answer = readStudentAnswer(form, quiz);
+        if (quiz.type === "mcq" && quiz.multiple_answers && answer.length === 0) {
+          status.textContent = "Select at least one answer before submitting.";
+          status.className = "error-msg";
+          return;
+        }
         if (quiz.type === "matching" && answer.some((item) => item === null || Number.isNaN(item))) {
           status.textContent = "Match every term before submitting.";
           status.className = "error-msg";
@@ -352,9 +361,9 @@ function setupExercise(quizType, autoGenerate = false, fixedTopic = "") {
           }
           const nextLabel = document.body.dataset.nextLabel || "next step";
           if (result.is_correct) {
-            status.textContent = "Correct. Moving to the next question type…";
+            status.textContent = "Correct. Review the explanation, then continue when ready.";
           } else {
-            status.textContent = `Incorrect. Generating another ${document.body.dataset.quizLabel || quizType} question…`;
+            status.textContent = `Incorrect. Review the explanation, then try another ${document.body.dataset.quizLabel || quizType} question when ready.`;
           }
           status.className = "status-message";
           const continueLabel = result.is_correct ? "Continue to the next question type" : `Try another ${document.body.dataset.quizLabel || quizType} question`;
@@ -363,7 +372,7 @@ function setupExercise(quizType, autoGenerate = false, fixedTopic = "") {
           target.append(continueLink);
           // Keep the reference answer and source page visible before following
           // the enforced sequence. The student may continue immediately.
-          window.setTimeout(() => window.location.assign(result.redirect), 8000);
+          // Keep feedback visible until the learner explicitly continues.
         } catch (error) {
           status.textContent = error.data?.recovery_hint ? `${error.message} ${error.data.recovery_hint}` : error.message;
           status.className = "error-msg";
@@ -398,22 +407,84 @@ function setupNotes() {
   const form = document.querySelector("#notes-form");
   const answer = document.querySelector("#notes-answer");
   if (!form || !answer) return;
-  form.addEventListener("submit", async (event) => {
+  let recordId = null, lastQuestion = null, busy = false;
+  const expandButton = document.createElement('button');
+  expandButton.type = 'button'; expandButton.className = 'btn-primary';
+  expandButton.textContent = 'Explain further with web sources';
+  answer.querySelector('.answer-text').insertAdjacentElement('afterend', expandButton);
+  expandButton.addEventListener('click', () => { if(lastQuestion && !busy) ask(lastQuestion, true); });
+  const feedback = document.querySelector('#notes-feedback');
+  feedback.addEventListener('submit', async event => {
     event.preventDefault();
-    setFormMessage(form, "Searching course notes…");
+    if (!recordId) return;
+    const button = feedback.querySelector('button'); button.disabled = true;
+    try {
+      await api(`/api/notes/${recordId}/feedback`, {method:'POST', body:JSON.stringify(jsonData(feedback))});
+      setFormMessage(feedback, 'Feedback sent. Your teacher can now review it.');
+    } catch(error) { setFormMessage(feedback, error.message, true); button.disabled = false; }
+  });
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    if(!busy) ask(jsonData(form), false);
+  });
+  async function ask(payload, useWeb) {
+    if(busy) return;
+    busy = true; expandButton.disabled = true;
+    if(!useWeb) { recordId = null; answer.classList.add('hidden'); }
+    setFormMessage(form, useWeb ? "Searching the web for a deeper explanation…" : "Preparing your explanation…");
     const submit = form.querySelector('button[type="submit"]');
     if (submit) submit.disabled = true;
     try {
-      const data = await api("/api/notes/ask", { method: "POST", body: JSON.stringify(jsonData(form)) });
+      const data = await api("/api/notes/ask", { method: "POST", body: JSON.stringify({...payload, web_search:useWeb}) });
+      lastQuestion = {...payload};
       answer.classList.remove("hidden");
       const text = answer.querySelector(".answer-text");
-      if (text) text.textContent = data.answer;
+      recordId = data.record_id;
+      feedback.reset(); feedback.querySelector('button').disabled = false; setFormMessage(feedback, '');
+      text.replaceChildren();
+      const sourceLabel = document.createElement('p');
+      sourceLabel.textContent = 'Answer source: ' + ({deepseek_notes:'DeepSeek AI',coze_notes_agent:'Coze AI',local_fallback:'Local excerpts (AI unavailable or invalid response)',local_clarification:'Clarification rule'}[data.answering_source] || 'Unknown');
+      sourceLabel.style.fontSize = "0.85em";
+      const notice = document.createElement('p'); notice.textContent = data.evidence_message || data.answer;
+      if(data.missing_information) { const missing = document.createElement('p'); missing.textContent = 'Missing / unverified: ' + data.missing_information; notice.append(missing); }
+      (data.sections || []).forEach(section => {
+        const heading = document.createElement('strong');
+        heading.textContent = section.kind === 'course' ? 'Course notes' : ((section.web_sources || []).length ? 'Web-retrieved explanation — outside course materials' : 'AI general knowledge — outside course materials');
+        const paragraph = document.createElement('p'); paragraph.textContent = section.text;
+        let container = text;
+        container.append(paragraph);
+        heading.style.fontSize="0.8em"; heading.style.fontWeight="normal"; container.append(heading);
+        (section.web_sources || []).forEach(source => {
+          const link = document.createElement('a'); link.textContent = source.title;
+          link.href = source.url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+          const row = document.createElement('p'); row.append(link); container.append(row);
+        });
+        if(section.reference_ids.length) {
+          const refs = document.createElement('p'); refs.textContent = 'References: ' + section.reference_ids.map(id => '['+id+']').join(', '); text.append(refs);
+        }
+      });
+      if((data.web_results || []).length) {
+        const heading = document.createElement('h3'); heading.textContent = 'Additional retrieved pages'; const webDetails = document.createElement('details'); const webSummary = document.createElement('summary'); webSummary.textContent='Other web search results'; webDetails.append(webSummary); text.append(webDetails);
+        data.web_results.forEach(source => { const row = document.createElement('p'); const link = document.createElement('a'); link.textContent = source.title; link.href = source.url; link.target = '_blank'; link.rel='noopener noreferrer'; row.append(link); webDetails.append(row); });
+      }
+      const evidence = document.createElement('details');
+      const summary = document.createElement('summary'); summary.textContent = 'Course coverage & search status';
+      evidence.append(summary, sourceLabel, notice);
+      const searchNote = document.createElement('p'); searchNote.textContent = 'Web search: ' + (data.search_status || 'not_enabled'); evidence.append(searchNote); text.append(evidence);
+      if(data.evidence_status === 'clarify') text.prepend(notice);
       renderCitations("#notes-citations", data.citations);
+      document.querySelectorAll('#notes-citations .citation-card').forEach((card, i) => {
+        const link = document.createElement('a');
+        link.textContent = 'Open source & highlight';
+        link.href = (window.location.pathname.replace(/\/notes\/?$/, '')) + '/notes/' + encodeURIComponent(data.record_id) + '/reference/' + data.citations[i].reference_id;
+        card.append(link);
+      });
       setFormMessage(form, "");
     } catch (error) {
       setFormMessage(form, error.message, true);
     } finally {
       if (submit) submit.disabled = false;
+      busy = false; expandButton.disabled = false;
     }
-  });
+  }
 }

@@ -1,6 +1,6 @@
 # Teacher question bank: five question types
 
-Teachers can import True/False, single-answer MCQ, Matching, Fill Blank and Short Answer through the **Question bank** entry on the teacher dashboard. All types follow download template → upload → validate → preview → confirm → list. Course filtering and pagination remain available.
+Teachers can import True/False, single- or multiple-answer MCQ, Matching, Fill Blank and Short Answer through the **Question bank** entry on the teacher dashboard. All types follow download template → upload → validate → preview → confirm → list. Course filtering and pagination remain available.
 
 PR #2 (TF/MCQ upload) is now merged into main, along with PR #1 (student bank-first generation). This extension targets main and preserves both the student retrieval helpers and the structured upload parser. It adds the three structured types without changing the existing TF/MCQ workbook contract. Production VM deployment remains pending.
 
@@ -18,13 +18,17 @@ New imports use the **Course-note chapter** dropdown loaded from uploaded course
 
 Limits: .xlsx only; 5 MB compressed / 20 MB expanded; 1,000 Questions rows and 10,000 data rows per detail sheet. Formula cells are rejected. Course is the chapter ID selected from uploaded course notes, not a manually typed name. Question IDs are unique within a teacher's course. In-file IDs are compared case-insensitively; database collation may impose stricter uniqueness. Existing questions are never overwritten; any failure rolls back the whole import.
 
-## TF and MCQ: unchanged format
+## TF and MCQ format
 
-The original single Questions sheet uses:
+The Questions sheet keeps the same columns. The downloaded objective workbook also has a **Multi-answer example** sheet; copy its example into Questions to import it.
+
+The Questions sheet uses:
 
 `question_id, question_type, topic, question, option_A, option_B, option_C, option_D, option_E, correct_answer, explanation`
 
-TF: type `TF`, answer TRUE/FALSE, empty options. Excel Boolean cells are accepted. MCQ: type `MCQ`, at least two distinct nonempty options, exactly one existing answer letter A–E. E remains optional; the system never automatically adds an option.
+TF: type `TF`, answer TRUE/FALSE, empty options. Excel Boolean cells are accepted. MCQ: type `MCQ`, at least two distinct nonempty options, one existing answer letter A–E (e.g. `B`) or multiple comma-separated letters (e.g. `A,C`). E remains optional; the system never automatically adds an option. Multiple-answer MCQs show checkboxes, require at least one selection, and award 100 only for the exact correct set, otherwise 0. Existing single-answer questions retain radio buttons. Duplicate letters and letters for missing options are rejected.
+
+Each imported row now provides **Review / correct explanation**. Changes apply only to future attempts. Missing or apparently unrelated explanations receive advisory warnings; teachers must verify their accuracy.
 
 ## Matching, Fill Blank and Short Answer
 
@@ -91,7 +95,7 @@ Teacher/admin authentication, owner-scoped lists, session CSRF checks and escape
 
 `question_type` values are `TF`, `MCQ`, `MATCHING`, `FILL`, `SHORT`; source remains `teacher_upload`. The existing migration service and startup `db.create_all()` create the new table, preserving old rows. There are no new packages or configuration values.
 
-The bank remains separate from course knowledge and is never ingested into the document vector index or teacher student-answer index. Student TF/MCQ bank-first retrieval and the existing `/question_bank/items` helper from main are retained unchanged. Matching/FILL/SHORT uploads do not yet participate in student retrieval or grading. Later student integration must map type names, authorize courses and keep all standard answers server-side until submission.
+The bank remains separate from course knowledge and is never ingested into the document vector index or teacher student-answer index. Student TF/MCQ bank-first retrieval and the existing `/question_bank/items` helper from main are retained unchanged. Matching uploads participate in student retrieval and deterministic scoring, including legacy MATCH rows. FILL/SHORT bank integration remains separate. All answer keys stay server-side until submission.
 
 ## Verification
 
@@ -118,3 +122,6 @@ An updated migration service or updated Teacher startup creates both bank tables
 ## Pre-deployment integration check (2026-11-03)
 
 PR #3 was retargeted to main after #2 merged. Main also includes the teammate student retrieval changes from #1. Resolve shared question_bank.py by preserving every retrieval/upsert helper from main and adding only the structured workbook dispatch from this extension. The teacher dropdown now supplies the chapter ID automatically for all five types. The student mapping currently supports Excel TF/MCQ only; do not advertise bank-first retrieval for the other three types. Group approval, an actual VM clone and database backup are still required before production deployment.
+
+
+For the cumulative quiz update and current VM rollout, see [multi-answer deployment notes](QUIZ_MULTI_ANSWER_DEPLOYMENT.md). Earlier verification/deployment sections above describe the original upload release.
