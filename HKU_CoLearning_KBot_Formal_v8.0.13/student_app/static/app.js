@@ -411,7 +411,7 @@ function setupNotes() {
   const expandButton = document.createElement('button');
   expandButton.type = 'button'; expandButton.className = 'btn-primary';
   expandButton.textContent = 'Explain further with web sources';
-  answer.querySelector('.answer-text').insertAdjacentElement('afterend', expandButton);
+  // Web explanation is temporarily disabled in the UI; do not mount the button.
   expandButton.addEventListener('click', () => { if(lastQuestion && !busy) ask(lastQuestion, true); });
   const feedback = document.querySelector('#notes-feedback');
   feedback.addEventListener('submit', async event => {
